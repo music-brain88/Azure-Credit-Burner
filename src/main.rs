@@ -5,24 +5,26 @@ use chrono::prelude::*;
 use reqwest::{self, header};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{sync::Arc, time::Duration};
-use tokio::{fs, time};
+use std::{sync::Arc, time::Duration, path::Path};
+use tokio::{fs, time, process::Command};
 
 use anyhow::{anyhow, bail, Result};
 use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use clap::Parser;
 use dotenv::dotenv;
 use futures::{stream, StreamExt};
+use ignore::{Walk, WalkBuilder};
 use log::{error, info};
 use simple_logger::SimpleLogger;
+use walkdir::WalkDir;
 
 // llmディレクトリのスキーマを利用
 mod llm;
 use llm::categories::{self, get_category_japanese};
 use llm::schemas::{
-    github_response::{FileInfo, GitHubContent, GitHubTree, GitHubTreeItem, RepoInfo},
+    github_response::{FileInfo, RepoInfo},
     openai_response::{
-        ChatMessage, Endpoint, OpenAIChoice, OpenAIResponse, OpenAIUsage, ResponseData,
+        ChatMessage, Endpoint, OpenAIResponse, ResponseData,
     },
 };
 
@@ -47,8 +49,12 @@ struct Args {
     concurrency: usize,
 
     /// ファイルあたりの最大処理数
-    #[clap(long, default_value = "25")]
+    #[clap(long, default_value = "50")]
     max_files: usize,
+
+    /// 最大ファイルサイズ（バイト）
+    #[clap(long, default_value = "100000")]
+    max_file_size: usize,
 }
 
 // 深掘り質問カテゴリ
@@ -112,245 +118,192 @@ fn get_debate_types() -> Vec<String> {
 
 // GitHubクライアント
 struct GitHubClient {
-    client: reqwest::Client,
-
     token: String,
+    output_dir: String,
+    max_file_size: usize,
 }
 
 impl GitHubClient {
-    fn new(token: String) -> Self {
-        let mut headers = header::HeaderMap::new();
-        headers.insert(
-            header::ACCEPT,
-            header::HeaderValue::from_static("application/vnd.github.v3+json"),
-        );
-        // User-Agentヘッダーを追加（必須項目）
-        headers.insert(
-            header::USER_AGENT,
-            header::HeaderValue::from_static("deep-dive-llm-rust-client"),
-        );
-
-        let client = reqwest::Client::builder()
-            .default_headers(headers)
-            .build()
-            .expect("Failed to create HTTP client");
-
-        GitHubClient { client, token }
+    fn new(token: String, output_dir: String, max_file_size: usize) -> Self {
+        GitHubClient { 
+            token, 
+            output_dir,
+            max_file_size,
+        }
     }
 
+    // リポジトリをクローンする
+    async fn clone_repository(&self, repo_info: &RepoInfo) -> Result<String> {
+        let repo_dir = format!("{}/repos/{}_{}", self.output_dir, repo_info.owner, repo_info.repo);
+        
+        // すでにクローン済みかチェック
+        if Path::new(&repo_dir).exists() {
+            info!("🔄 リポジトリはすでにクローン済み: {}/{}", repo_info.owner, repo_info.repo);
+        } else {
+            // ディレクトリ作成
+            fs::create_dir_all(Path::new(&repo_dir).parent().unwrap()).await?;
+            
+            // git clone コマンド実行
+            let clone_url = format!("https://{}@github.com/{}/{}.git", 
+                self.token, repo_info.owner, repo_info.repo);
+            
+            info!("🔽 リポジトリをクローン中: {}/{}", repo_info.owner, repo_info.repo);
+            
+            let output = Command::new("git")
+                .args(["clone", "--depth", "1", &clone_url, &repo_dir])
+                .output()
+                .await?;
+            
+            if !output.status.success() {
+                let error = String::from_utf8_lossy(&output.stderr);
+                return Err(anyhow!("リポジトリのクローンに失敗: {}", error));
+            }
+            
+            info!("✅ リポジトリのクローン成功: {}/{}", repo_info.owner, repo_info.repo);
+        }
+        
+        Ok(repo_dir)
+    }
+
+    // コードファイルを判定する関数
+    fn is_code_file(path: &str) -> bool {
+        let code_extensions = [
+            ".py", ".js", ".ts", ".java", ".c", ".cpp", ".h", ".hpp", ".go", 
+            ".rs", ".rb", ".php", ".md", ".cs", ".jsx", ".tsx", ".css", ".scss", 
+            ".less", ".html", ".xml", ".json", ".yaml", ".yml", ".toml", ".sh", 
+            ".bash", ".ps1", ".sql", ".graphql", ".proto", ".kt", ".swift"
+        ];
+        
+        code_extensions.iter().any(|&ext| path.ends_with(ext))
+    }
+
+    // 除外すべきディレクトリを判定する関数
+    fn is_excluded_dir(path: &str) -> bool {
+        let excluded_dirs = [
+            "/.git/", "/node_modules/", "/target/", "/build/", "/dist/", 
+            "/bin/", "/obj/", "/.idea/", "/.vscode/", "/vendor/", 
+            "/deps/", "/_build/", "/venv/", "/__pycache__/"
+        ];
+        
+        excluded_dirs.iter().any(|&dir| path.contains(dir))
+    }
+
+    // リポジトリファイルを取得
     async fn fetch_repo_files(&self, repo_info: &RepoInfo) -> Result<Vec<FileInfo>> {
         info!(
             "⬇️ リポジトリからファイル取得中: {}/{}",
             repo_info.owner, repo_info.repo
         );
-
-        // まずmainブランチでファイル一覧を取得
-        let mut files_url = format!(
-            "https://api.github.com/repos/{}/{}/git/trees/main?recursive=1",
-            repo_info.owner, repo_info.repo
-        );
-
-        // APIリクエスト用ヘッダー
-        let auth_header = format!("token {}", self.token);
-
+        
+        // リポジトリをクローン
+        let repo_dir = self.clone_repository(repo_info).await?;
+        
         // ファイル一覧を取得
-
-        let mut response = self
-            .client
-            .get(&files_url)
-            .header(header::AUTHORIZATION, &auth_header)
-            .header(header::USER_AGENT, "deep-dive-llm-rust-client")
-            .send()
-            .await;
-
-        // mainブランチが無い場合はmasterを試す
-        if response.is_err() || response.as_ref().unwrap().status() != 200 {
-            files_url = format!(
-                "https://api.github.com/repos/{}/{}/git/trees/master?recursive=1",
-                repo_info.owner, repo_info.repo
-            );
-            response = self
-                .client
-                .get(&files_url)
-                .header(header::AUTHORIZATION, &auth_header)
-                .header(header::USER_AGENT, "deep-dive-llm-rust-client")
-                .send()
-                .await;
+        let mut files = Vec::new();
+        
+        // ignoreクレートを使ってgitignoreなどを考慮したファイル走査
+        let walker = WalkBuilder::new(&repo_dir)
+            .standard_filters(true)  // .gitignoreを考慮
+            .hidden(false)           // 隠しファイルも対象に
+            .build();
+            
+        let mut all_files = Vec::new();
+        
+        // ファイルをすべて収集
+        for result in walker {
+            match result {
+                Ok(entry) => {
+                    let path = entry.path();
+                    if path.is_file() {
+                        let path_str = path.to_string_lossy().to_string();
+                        
+                        // コードファイルかつ除外対象でないファイルのみ
+                        if Self::is_code_file(&path_str) && !Self::is_excluded_dir(&path_str) {
+                            all_files.push(path.to_path_buf());
+                        }
+                    }
+                },
+                Err(e) => {
+                    error!("⚠️ ファイル列挙エラー: {}", e);
+                }
+            }
         }
-
-        // エラーチェック
-        if response.is_err() {
-            return Err(anyhow!("リポジトリ情報取得失敗: {:?}", response.err()));
-        }
-
-        let response = response.unwrap();
-        if response.status() != 200 {
-            let status = response.status();
-            let error_text = response.text().await?;
-            return Err(anyhow!(
-                "リポジトリ情報取得エラー: ステータス {}, レスポンス: {:?}",
-                status,
-                error_text
-            ));
-        }
-
-        // ファイル一覧をパース
-        let tree_data: GitHubTree = response.json().await?;
-
-        // コード関連のファイルをフィルタリング
-        let code_extensions = [
-            ".py", ".js", ".ts", ".java", ".c", ".cpp", ".h", ".go", ".rs", ".rb", ".php", ".md",
-            ".cs", ".jsx", ".tsx",
-        ];
-
-        let mut code_files: Vec<GitHubTreeItem> = tree_data
-            .tree
-            .into_iter()
-            .filter(|item| {
-                item.item_type == "blob"
-                    && code_extensions.iter().any(|&ext| item.path.ends_with(ext))
-            })
-            .collect();
-
+        
         // 優先度の高いファイルを先頭に
-        code_files.sort_by(|a, b| {
-            let a_priority = is_priority_file(&a.path);
-            let b_priority = is_priority_file(&b.path);
+        all_files.sort_by(|a, b| {
+            let a_str = a.to_string_lossy();
+            let b_str = b.to_string_lossy();
+            let a_priority = is_priority_file(&a_str);
+            let b_priority = is_priority_file(&b_str);
 
             if a_priority && !b_priority {
                 std::cmp::Ordering::Less
             } else if !a_priority && b_priority {
                 std::cmp::Ordering::Greater
             } else {
-                a.path.cmp(&b.path)
+                a.cmp(b)
             }
         });
-
+        
         // ファイル数を制限
-        let max_files = repo_info.max_files.min(code_files.len());
-        // 所有権を渡す形に変更
-        let selected_files = code_files.into_iter().take(max_files).collect::<Vec<_>>();
-
-        // 各ファイルの内容を並列で取得
-        let mut file_infos = Vec::new();
-        let branch = if files_url.contains("/main?") {
-            "main"
-        } else {
-            "master"
-        };
-
-        // 同時実行数を制限して取得
-        let repo_path = format!("{}/{}", repo_info.owner, repo_info.repo);
-        let fetched_files = stream::iter(selected_files)
-            .map(|file| {
-                let client = &self.client;
-                let auth = auth_header.clone();
-                let repo = repo_path.clone();
-                let branch = branch.clone();
-                let file_path = file.path.clone(); // クローンして所有権を得る
-
-                async move {
-                    // 参照ではなく所有権のある値を使用
-
-                    // ファイル内容のURL構築
-                    let content_url = format!(
-                        "https://api.github.com/repos/{}/contents/{}",
-                        repo, file_path
-                    );
-
-                    let response = client
-                        .get(&content_url)
-                        .header(header::AUTHORIZATION, auth)
-                        .header(header::USER_AGENT, "deep-dive-llm-rust-client")
-                        .query(&[("ref", branch)])
-                        .send()
-                        .await;
-
-                    match response {
-                        Ok(res) => {
-                            if res.status() == 200 {
-                                match res.json::<GitHubContent>().await {
-                                    Ok(content_data) => {
-                                        if content_data.encoding == "base64" {
-                                            match BASE64
-                                                .decode(&content_data.content.replace("\n", ""))
-                                            {
-                                                Ok(decoded) => {
-                                                    let content = String::from_utf8_lossy(&decoded)
-                                                        .to_string();
-
-                                                    // 大きなファイルは先頭部分のみ（文字単位で安全に切り取り）
-                                                    let content = if content.len() > 10000 {
-                                                        // 文字単位で処理して安全に切り取る
-                                                        let truncated: String =
-                                                            content.chars().take(10000).collect();
-                                                        format!("{}...\n(内容省略)...", truncated)
-                                                    } else {
-                                                        content
-                                                    };
-
-                                                    info!("✅ ファイル取得成功: {}", file_path);
-                                                    Some(FileInfo {
-                                                        path: file_path.clone(),
-                                                        content,
-                                                    })
-                                                }
-                                                Err(e) => {
-                                                    error!(
-                                                        "⚠️ ファイルデコードエラー: {} - {}",
-                                                        &file_path, e
-                                                    );
-                                                    None
-                                                }
-                                            }
-                                        } else {
-                                            error!(
-                                                "⚠️ 未対応のエンコーディング: {}",
-                                                content_data.encoding
-                                            );
-                                            None
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("⚠️ ファイル解析エラー: {} - {}", file_path, e);
-
-                                        None
-                                    }
-                                }
-                            } else {
-                                error!(
-                                    "⚠️ ファイル取得失敗: {} - ステータス: {}",
-                                    file_path,
-                                    res.status()
-                                );
-                                None
-                            }
-                        }
-                        Err(e) => {
-                            error!("⚠️ ファイルリクエストエラー: {} - {}", file_path, e);
-                            None
-                        }
+        let max_files = repo_info.max_files.min(all_files.len());
+        let selected_files = all_files.into_iter().take(max_files);
+        
+        // ファイル内容を読み込む
+        for path in selected_files {
+            // 相対パスを取得
+            let rel_path = path.strip_prefix(&repo_dir)
+                .map_err(|e| anyhow!("パス変換エラー: {}", e))?
+                .to_string_lossy()
+                .to_string();
+                
+            // ファイルサイズをチェック
+            match fs::metadata(&path).await {
+                Ok(metadata) => {
+                    // 大きすぎるファイルはスキップ
+                    if metadata.len() > self.max_file_size as u64 {
+                        info!("⏩ サイズが大きいためスキップ: {} ({} bytes)", rel_path, metadata.len());
+                        continue;
                     }
+                },
+                Err(e) => {
+                    error!("⚠️ ファイルメタデータ取得エラー: {} - {}", rel_path, e);
+                    continue;
                 }
-            })
-            .buffer_unordered(5) // 同時に5ファイルまで取得
-            .collect::<Vec<_>>()
-            .await;
-
-        // 取得できたファイルだけを返す
-        for file_info_opt in fetched_files {
-            if let Some(file_info) = file_info_opt {
-                file_infos.push(file_info);
+            }
+                
+            // ファイル内容を読み込む
+            match fs::read_to_string(&path).await {
+                Ok(content) => {
+                    info!("✅ ファイル読み込み成功: {}", rel_path);
+                    
+                    // 長すぎるファイルは先頭部分のみ
+                    let content = if content.len() > self.max_file_size {
+                        // 文字単位で処理して安全に切り取る
+                        let truncated: String = content.chars().take(self.max_file_size).collect();
+                        format!("{}...\n(内容省略)...", truncated)
+                    } else {
+                        content
+                    };
+                    
+                    files.push(FileInfo {
+                        path: rel_path,
+                        content,
+                    });
+                },
+                Err(e) => {
+                    error!("⚠️ ファイル読み込みエラー: {} - {}", rel_path, e);
+                }
             }
         }
-
-        info!("🗂️ 取得ファイル数: {}/{}", file_infos.len(), max_files);
-
-        if file_infos.is_empty() {
+        
+        info!("🗂️ 取得ファイル数: {}/{}", files.len(), max_files);
+        
+        if files.is_empty() {
             bail!("リポジトリからファイルを取得できませんでした");
         }
-
-        Ok(file_infos)
+        
+        Ok(files)
     }
 }
 
@@ -377,7 +330,7 @@ impl AzureOpenAIClient {
         AzureOpenAIClient {
             client,
             endpoint,
-            api_version: "2024-12-01-preview".to_string(),
+            api_version: "2023-05-15".to_string(),
         }
     }
 
@@ -642,7 +595,6 @@ async fn debate_runner(
     ];
 
     // 質問生成用
-
     let deep_questions = DeepQuestions::new();
 
     // 会話ループ
@@ -658,7 +610,7 @@ async fn debate_runner(
         match openai_client
             .chat_completion(
                 &messages,
-                "gpt-4.5-preview", // Azure用のモデルデプロイメント名に変更
+                "gpt-4.5-preview", // 最大モデルを使用
                 4000,              // 長い出力
                 0.8,               // 適度な創造性
             )
@@ -702,7 +654,6 @@ async fn debate_runner(
 
                 messages.push(ChatMessage {
                     role: "user".to_string(),
-
                     content: next_question,
                 });
 
@@ -789,9 +740,9 @@ async fn main() -> Result<()> {
     // リポジトリ1
     if let (Ok(owner), Ok(repo)) = (std::env::var("REPO_OWNER_1"), std::env::var("REPO_NAME_1")) {
         let max_files = std::env::var("REPO_MAX_FILES_1")
-            .unwrap_or_else(|_| "30".to_string())
+            .unwrap_or_else(|_| "50".to_string())
             .parse::<usize>()
-            .unwrap_or(30);
+            .unwrap_or(50);
 
         github_repos.push(RepoInfo {
             owner,
@@ -803,9 +754,9 @@ async fn main() -> Result<()> {
     // リポジトリ2
     if let (Ok(owner), Ok(repo)) = (std::env::var("REPO_OWNER_2"), std::env::var("REPO_NAME_2")) {
         let max_files = std::env::var("REPO_MAX_FILES_2")
-            .unwrap_or_else(|_| "25".to_string())
+            .unwrap_or_else(|_| "50".to_string())
             .parse::<usize>()
-            .unwrap_or(25);
+            .unwrap_or(50);
 
         github_repos.push(RepoInfo {
             owner,
@@ -817,9 +768,9 @@ async fn main() -> Result<()> {
     // リポジトリ3
     if let (Ok(owner), Ok(repo)) = (std::env::var("REPO_OWNER_3"), std::env::var("REPO_NAME_3")) {
         let max_files = std::env::var("REPO_MAX_FILES_3")
-            .unwrap_or_else(|_| "20".to_string())
+            .unwrap_or_else(|_| "50".to_string())
             .parse::<usize>()
-            .unwrap_or(20);
+            .unwrap_or(50);
 
         github_repos.push(RepoInfo {
             owner,
@@ -834,17 +785,17 @@ async fn main() -> Result<()> {
             RepoInfo {
                 owner: "your-org".to_string(),
                 repo: "your-private-repo1".to_string(),
-                max_files: 30,
+                max_files: 50,
             },
             RepoInfo {
                 owner: "your-org".to_string(),
                 repo: "your-private-repo2".to_string(),
-                max_files: 25,
+                max_files: 50,
             },
             RepoInfo {
                 owner: "your-org".to_string(),
                 repo: "your-private-repo3".to_string(),
-                max_files: 20,
+                max_files: 50,
             },
         ];
     }
@@ -854,7 +805,7 @@ async fn main() -> Result<()> {
 
     // GitHubクライアント (.envまたはコマンドライン引数から)
     let github_token = std::env::var("GITHUB_TOKEN").unwrap_or_else(|_| args.github_token.clone());
-    let github_client = Arc::new(GitHubClient::new(github_token));
+    let github_client = Arc::new(GitHubClient::new(github_token, output_dir.clone(), args.max_file_size));
 
     // Azureエンドポイント
     let endpoints = Arc::new(endpoints);
@@ -869,6 +820,8 @@ async fn main() -> Result<()> {
     info!("💰💻 Azure Credit Burner 起動中... 💰💻");
     info!("同時実行数: {}", concurrency);
     info!("対象リポジトリ数: {}", github_repos.len());
+    info!("ファイル数上限: {}", args.max_files);
+    info!("ファイルサイズ上限: {} バイト", args.max_file_size);
 
     // タスク作成
     let mut tasks = Vec::new();
@@ -945,7 +898,6 @@ async fn main() -> Result<()> {
     }
 
     // 残りのタスクを完了まで待機
-
     while !active_tasks.is_empty() {
         let (completed, _index, remaining) = futures::future::select_all(active_tasks).await;
 
@@ -953,7 +905,6 @@ async fn main() -> Result<()> {
             Ok(Ok(_)) => {
                 info!("🎉 タスク完了");
             }
-
             Ok(Err(e)) => {
                 error!("❌ タスクエラー: {}", e);
             }
@@ -974,9 +925,10 @@ async fn main() -> Result<()> {
 #[derive(Serialize, Deserialize)]
 struct Config {
     github_token: String,
-
     output_dir: String,
     endpoints: Vec<Endpoint>,
     repos: Vec<RepoInfo>,
     concurrency: usize,
+    max_files: usize,
+    max_file_size: usize,
 }

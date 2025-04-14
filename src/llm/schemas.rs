@@ -1,6 +1,6 @@
 // LLM関連のスキーマ定義
 
-// GitHub API 応答に関するスキーマ
+// GitHub関連のスキーマ（Git Cloneベース）
 pub mod github_response {
     use serde::{Deserialize, Serialize};
 
@@ -17,52 +17,6 @@ pub mod github_response {
     pub struct FileInfo {
         pub path: String,
         pub content: String,
-    }
-
-    // GitHubのコンテンツAPI応答
-    #[derive(Clone, Debug, Deserialize, Serialize)]
-    pub struct GitHubContent {
-        pub name: Option<String>,
-        pub path: Option<String>,
-        pub sha: String,
-        pub size: Option<u64>,
-        pub url: String,
-        pub html_url: Option<String>,
-        pub git_url: Option<String>,
-        pub download_url: Option<String>,
-        pub r#type: Option<String>,
-        pub content: String,
-        pub encoding: String,
-        pub _links: Option<GitHubLinks>,
-    }
-
-    // GitHubのリンク情報
-    #[derive(Clone, Debug, Deserialize, Serialize)]
-    pub struct GitHubLinks {
-        pub git: Option<String>,
-        pub html: Option<String>,
-        pub self_link: Option<String>,
-    }
-
-    // GitHubのツリーAPI応答
-    #[derive(Clone, Debug, Deserialize, Serialize)]
-    pub struct GitHubTree {
-        pub sha: String,
-        pub url: String,
-        pub tree: Vec<GitHubTreeItem>,
-        pub truncated: Option<bool>,
-    }
-
-    // GitHubのツリーアイテム
-    #[derive(Clone, Debug, Deserialize, Serialize)]
-    pub struct GitHubTreeItem {
-        pub path: String,
-        pub mode: String,
-        #[serde(rename = "type")]
-        pub item_type: String,
-        pub sha: String,
-        pub size: Option<u64>,
-        pub url: String,
     }
 }
 
