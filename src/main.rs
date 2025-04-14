@@ -16,8 +16,15 @@ use futures::{StreamExt, stream};
 use log::{error, info};
 use simple_logger::SimpleLogger;
 
-// コマンドライン引数の定義
+// llmディレクトリのスキーマを利用
+mod llm;
+use llm::schemas::{
+    github_response::{FileInfo, GitHubContent, GitHubTree, GitHubTreeItem, RepoInfo},
+    openai_response::{ChatMessage, Endpoint, OpenAIChoice, OpenAIResponse, OpenAIUsage, ResponseData},
+};
+use llm::categories::{self, get_category_japanese};
 
+// コマンドライン引数の定義
 #[derive(Parser, Debug)]
 #[clap(
     name = "azure-credit-burner",
@@ -42,168 +49,34 @@ struct Args {
     max_files: usize,
 }
 
-// Azure OpenAI のエンドポイント設定
-#[derive(Clone, Debug, Serialize, Deserialize)]
-
-struct Endpoint {
-    name: String,
-    key: String,
-    endpoint: String,
-}
-
-// GitHubリポジトリ情報
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct RepoInfo {
-    owner: String,
-    repo: String,
-    max_files: usize,
-}
-
-// ファイル情報
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct FileInfo {
-    path: String,
-    content: String,
-}
-
-// チャットメッセージ
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct ChatMessage {
-    role: String,
-    content: String,
-}
-
-// 保存用レスポンスデータ
-#[derive(Clone, Debug, Serialize, Deserialize)]
-struct ResponseData {
-    repo: String,
-    debate_type: String,
-    turn: usize,
-    timestamp: String,
-    endpoint: String,
-    messages: Vec<ChatMessage>,
-    tokens_used: usize,
-}
-
-// GitHub APIレスポンス用
-#[derive(Debug, Deserialize)]
-struct GitHubTreeItem {
-    path: String,
-    #[serde(rename = "type")]
-    item_type: String,
-    url: Option<String>,
-}
-
-// `Clone`トレイトを実装して、所有権を簡単に移動できるようにする
-impl Clone for GitHubTreeItem {
-    fn clone(&self) -> Self {
-        GitHubTreeItem {
-            path: self.path.clone(),
-            item_type: self.item_type.clone(),
-            url: self.url.clone(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-struct GitHubTree {
-    tree: Vec<GitHubTreeItem>,
-}
-
-#[derive(Debug, Deserialize)]
-struct GitHubContent {
-    content: String,
-    encoding: String,
-}
-
-// OpenAI APIレスポンス用
-#[derive(Debug, Deserialize)]
-struct OpenAIUsage {
-    total_tokens: usize,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIChoice {
-    message: ChatMessage,
-}
-
-#[derive(Debug, Deserialize)]
-struct OpenAIResponse {
-    id: String,
-    choices: Vec<OpenAIChoice>,
-    usage: OpenAIUsage,
-}
-
 // 深掘り質問カテゴリ
-struct DeepQuestions {
-    architecture: Vec<String>,
-    performance: Vec<String>,
-    security: Vec<String>,
-    testing: Vec<String>,
-    domain: Vec<String>,
-    distributed: Vec<String>,
-    maintainability: Vec<String>,
-}
+struct DeepQuestions;
 
 impl DeepQuestions {
     fn new() -> Self {
-        DeepQuestions {
-            architecture: vec![
-
-                "このコードベースで使われているデザインパターンを特定し、それらが現代的なベストプラクティスにどう適合または乖離しているか詳細に分析してください。具体的なコード例を引用して説明してください。".to_string(),
-                "このプロジェクトのコンポーネント間の依存関係を詳細に分析し、循環依存や密結合が存在する部分を特定してください。その改善案として、どのようなリファクタリングが効果的か具体的に提案してください。".to_string(),
-                "このコードベースの拡張性を深く分析してください。新機能追加が困難になりそうなボトルネックはどこにあるか、具体的なコード構造を参照しながら説明し、より柔軟なアーキテクチャへの移行パスを提案してください。".to_string(),
-            ],
-            performance: vec![
-                "このコードベースにおける潜在的なパフォーマンスボトルネックを3つ以上特定し、それぞれがどのような条件下で問題になるか、どの程度のスケールで影響が出始めるかを予測してください。具体的な改善案とその期待効果も詳細に説明してください。".to_string(),
-                "メモリ使用量の観点からこのコードを分析し、メモリリークの可能性がある箇所や最適化できる部分を特定してください。大規模データセットで処理する場合、どのようなメモリ最適化戦略が効果的か具体的に提案してください。".to_string(),
-                "このコードのマルチスレッド/並列処理の実装を分析し、競合状態やデッドロックの可能性がある箇所を特定してください。並列処理効率を向上させるための具体的なリファクタリング案を、コード例を含めて提案してください。".to_string(),
-            ],
-
-            security: vec![
-
-                "このコードベースにOWASPトップ10に関連する脆弱性が存在するか詳細に分析し、具体的なコード箇所を特定してください。各脆弱性に対する修正案を、セキュリティベストプラクティスに基づいて提案してください。".to_string(),
-                "認証・認可の実装を詳細に分析し、特権エスカレーションやセッション管理に関する潜在的な脆弱性を特定してください。より堅牢なアクセス制御モデルへの移行計画を具体的に提案してください。".to_string(),
-                "データの処理・保存方法からプライバシーとデータ保護の観点で問題となる可能性がある箇所を特定し、GDPR/CCPAなどの規制に準拠するための具体的な改善策を提案してください。".to_string(),
-            ],
-            testing: vec![
-                "現在のテストカバレッジを分析し、重要なビジネスロジックで十分にテストされていない部分を特定してください。優先的に強化すべきテスト領域と、適切なテスト手法（単体/統合/E2E）を提案してください。".to_string(),
-
-                "このコードベースに効果的なプロパティベーステストや変異テストを導入するとしたら、どの部分に適用すべきか分析し、具体的なテスト実装例を3つ以上提案してください。".to_string(),
-                "現在のテストの質を分析し、フラキー(不安定)テスト、過度に複雑なテスト、メンテナンスコストの高いテストを特定してください。テスト品質を向上させるためのリファクタリング戦略を詳細に提案してください。".to_string(),
-            ],
-            domain: vec![
-
-                "このコードベースにおいて、ビジネスロジックとインフラストラクチャの関心事がどの程度分離されているか分析してください。ドメイン駆動設計の原則に基づいて、より明確な境界コンテキストを持つアーキテクチャへのリファクタリング計画を提案してください。".to_string(),
-                "このプロダクトの中核的な価値提案（バリュープロポジション）と、それを実現するための重要なコード部分を特定してください。それらの部分が技術的負債やメンテナンス上の課題を抱えていないか詳細に分析してください。".to_string(),
-                "このコードベースから、製品が将来的にどのような方向に進化する可能性があるか予測してください。現在のアーキテクチャがその進化をサポートするために必要な変更点を詳細に提案してください。".to_string(),
-            ],
-            distributed: vec![
-                "このシステムをマイクロサービスアーキテクチャに移行するとしたら、どのようなサービス境界が適切か分析し、具体的な分割案と移行戦略を提案してください。各サービスの責任範囲とAPIインターフェースを詳細に説明してください。".to_string(),
-                "このシステムの障害耐性と回復力を分析し、単一障害点や耐障害性の低い部分を特定してください。カオスエンジニアリングの原則に基づいて、どのような障害シナリオをテストすべきか、具体的なテスト計画を提案してください。".to_string(),
-                "分散トレーシング、集中型ロギング、モニタリングの観点でこのシステムを分析し、オブザーバビリティを向上させるための具体的な改善案を提案してください。どのようなメトリクスやアラートが重要か詳細に説明してください。".to_string(),
-            ],
-            maintainability: vec![
-                "複雑性メトリクス（循環的複雑度、認知的複雑度など）の観点でこのコードベースを分析し、最も複雑な部分を特定してください。これらの部分をより理解しやすく保守しやすくするためのリファクタリング計画を提案してください。".to_string(),
-                "このコードにおける命名規則、コメント、ドキュメントの質を詳細に分析し、理解しにくい部分や誤解を招く可能性のある部分を特定してください。読みやすさと保守性を向上させるための具体的な改善案を提案してください。".to_string(),
-                "このコードベースにおけるコピー＆ペーストパターンや重複コードを特定し、それらを適切に抽象化・一般化するためのリファクタリング提案を具体的なコード例とともに提示してください。".to_string(),
-            ],
-        }
+        DeepQuestions {}
     }
 
     fn get_question(&self, category: &str, index: usize) -> String {
-        match category {
-            "アーキテクチャ" => self.architecture[index % self.architecture.len()].clone(),
-            "パフォーマンス" => self.performance[index % self.performance.len()].clone(),
-            "セキュリティ" => self.security[index % self.security.len()].clone(),
-
-            "テスト品質" => self.testing[index % self.testing.len()].clone(),
-            "ドメイン分析" => self.domain[index % self.domain.len()].clone(),
-            "分散システム" => self.distributed[index % self.distributed.len()].clone(),
-            "コード保守性" => {
-                self.maintainability[index % self.maintainability.len()].clone()
+        // 日本語カテゴリ名から英語カテゴリ名に変換
+        let category_en = match category {
+            "アーキテクチャ" => "architecture",
+            "パフォーマンス" => "performance",
+            "セキュリティ" => "security",
+            "テスト品質" => "testing",
+            "ドメイン分析" => "domain",
+            "分散システム" => "distributed",
+            "コード保守性" => "maintainability",
+            _ => "architecture", // デフォルトはアーキテクチャ
+        };
+        
+        // カテゴリファイルから質問を取得
+        match categories::get_question(category_en, index) {
+            Ok(question) => question,
+            Err(_) => {
+                // エラー時のフォールバック質問
+                "このリポジトリについて、さらに詳細な分析を行ってください。コードの品質や設計について特に重要な点は何でしょうか？".to_string()
             }
-            _ => "このリポジトリの詳細分析を続けてください。".to_string(),
         }
     }
 
@@ -581,16 +454,31 @@ fn generate_repo_debate_prompt(
         file_samples.push_str(&content);
     }
 
-    // システムプロンプト作成
-    let system_prompt = format!(
-        r#"あなたは高度なAIエンジニアとして、GitHubリポジトリ「{}/{}」の分析を行います。
+    // テンプレート読み込みを試みる
+    let system_prompt = match llm::prompts::load_template("repo_analysis") {
+        Ok(template) => {
+            // テンプレート内の変数を置換
+            let variables = vec![
+                ("owner".to_string(), repo_info.owner.clone()),
+                ("repo".to_string(), repo_info.repo.clone()),
+                ("debate_type".to_string(), debate_type.to_string()),
+                ("file_count".to_string(), repo_files.len().to_string()),
+                ("file_summary".to_string(), file_summary),
+                ("readme".to_string(), readme_content[..readme_content.len().min(1000)].to_string()),
+                ("file_samples".to_string(), file_samples),
+            ];
+            
+            llm::prompts::render_template(&template, &variables)
+        },
+        Err(_) => {
+            // テンプレート読み込みエラー時のフォールバックプロンプト
+            format!(
+                r#"あなたは高度なAIエンジニアとして、GitHubリポジトリ「{}/{}」の分析を行います。
 このリポジトリについて「{}」という観点から詳細に議論してください。
 
 【リポジトリ情報】
 所有者: {}
-
 リポジトリ名: {}
-
 ファイル数: {}
 
 【ファイル一覧】
@@ -611,20 +499,21 @@ fn generate_repo_debate_prompt(
 5. このプロジェクトの将来性や発展方向について予測してください
 
 できるだけ具体的なコード例や技術的詳細に基づいて、深い洞察を提供してください。"#,
-        repo_info.owner,
-        repo_info.repo,
-        debate_type,
-        repo_info.owner,
-        repo_info.repo,
-        repo_files.len(),
-        file_summary,
-        &readme_content[..readme_content.len().min(1000)],
-        file_samples,
-        debate_type
-    );
+                repo_info.owner,
+                repo_info.repo,
+                debate_type,
+                repo_info.owner,
+                repo_info.repo,
+                repo_files.len(),
+                file_summary,
+                &readme_content[..readme_content.len().min(1000)],
+                file_samples,
+                debate_type
+            )
+        }
+    };
 
     // 初期メッセージ
-
     let initial_message = format!(
         "「{}/{}」リポジトリを「{}」の観点から分析します。まず、このプロジェクトの概要と主要コンポーネントを特定しましょう。",
         repo_info.owner, repo_info.repo, debate_type
