@@ -8,21 +8,23 @@ use serde_json::json;
 use std::{sync::Arc, time::Duration};
 use tokio::{fs, time};
 
-use anyhow::{Result, anyhow, bail};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use anyhow::{anyhow, bail, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use clap::Parser;
 use dotenv::dotenv;
-use futures::{StreamExt, stream};
+use futures::{stream, StreamExt};
 use log::{error, info};
 use simple_logger::SimpleLogger;
 
 // llmディレクトリのスキーマを利用
 mod llm;
+use llm::categories::{self, get_category_japanese};
 use llm::schemas::{
     github_response::{FileInfo, GitHubContent, GitHubTree, GitHubTreeItem, RepoInfo},
-    openai_response::{ChatMessage, Endpoint, OpenAIChoice, OpenAIResponse, OpenAIUsage, ResponseData},
+    openai_response::{
+        ChatMessage, Endpoint, OpenAIChoice, OpenAIResponse, OpenAIUsage, ResponseData,
+    },
 };
-use llm::categories::{self, get_category_japanese};
 
 // コマンドライン引数の定義
 #[derive(Parser, Debug)]
@@ -69,7 +71,7 @@ impl DeepQuestions {
             "コード保守性" => "maintainability",
             _ => "architecture", // デフォルトはアーキテクチャ
         };
-        
+
         // カテゴリファイルから質問を取得
         match categories::get_question(category_en, index) {
             Ok(question) => question,
@@ -280,11 +282,9 @@ impl GitHubClient {
                                                     // 大きなファイルは先頭部分のみ（文字単位で安全に切り取り）
                                                     let content = if content.len() > 10000 {
                                                         // 文字単位で処理して安全に切り取る
-                                                        let truncated: String = content.chars().take(10000).collect();
-                                                        format!(
-                                                            "{}...\n(内容省略)...",
-                                                            truncated
-                                                        )
+                                                        let truncated: String =
+                                                            content.chars().take(10000).collect();
+                                                        format!("{}...\n(内容省略)...", truncated)
                                                     } else {
                                                         content
                                                     };
@@ -476,12 +476,15 @@ fn generate_repo_debate_prompt(
                 ("debate_type".to_string(), debate_type.to_string()),
                 ("file_count".to_string(), repo_files.len().to_string()),
                 ("file_summary".to_string(), file_summary),
-                ("readme".to_string(), readme_content.chars().take(1000).collect::<String>()),
+                (
+                    "readme".to_string(),
+                    readme_content.chars().take(1000).collect::<String>(),
+                ),
                 ("file_samples".to_string(), file_samples),
             ];
-            
+
             llm::prompts::render_template(&template, &variables)
-        },
+        }
         Err(_) => {
             // テンプレート読み込みエラー時のフォールバックプロンプト
             format!(
@@ -655,9 +658,9 @@ async fn debate_runner(
         match openai_client
             .chat_completion(
                 &messages,
-                "gpt-4-32k", // 最大モデルを使用
-                4000,        // 長い出力
-                0.8,         // 適度な創造性
+                "gpt-4.5-preview", // 最大モデルを使用
+                4000,              // 長い出力
+                0.8,               // 適度な創造性
             )
             .await
         {
@@ -733,7 +736,7 @@ async fn debate_runner(
 async fn main() -> Result<()> {
     // .envファイルを読み込み
     dotenv().ok();
-    
+
     // ロガー初期化
     SimpleLogger::new()
         .with_level(log::LevelFilter::Info)
@@ -752,80 +755,79 @@ async fn main() -> Result<()> {
     let endpoints = vec![
         Endpoint {
             name: "east-us".to_string(),
-            key: std::env::var("AZURE_OPENAI_KEY_EAST_US").unwrap_or_else(|_| "YOUR_KEY_1".to_string()),
-            endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_EAST_US").unwrap_or_else(|_| "https://eastus.api.cognitive.microsoft.com".to_string()),
+            key: std::env::var("AZURE_OPENAI_KEY_EAST_US")
+                .unwrap_or_else(|_| "YOUR_KEY_1".to_string()),
+            endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_EAST_US")
+                .unwrap_or_else(|_| "https://eastus.api.cognitive.microsoft.com".to_string()),
         },
         Endpoint {
             name: "west-us".to_string(),
-            key: std::env::var("AZURE_OPENAI_KEY_WEST_US").unwrap_or_else(|_| "YOUR_KEY_2".to_string()),
-            endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_WEST_US").unwrap_or_else(|_| "https://westus.api.cognitive.microsoft.com".to_string()),
+            key: std::env::var("AZURE_OPENAI_KEY_WEST_US")
+                .unwrap_or_else(|_| "YOUR_KEY_2".to_string()),
+            endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_WEST_US")
+                .unwrap_or_else(|_| "https://westus.api.cognitive.microsoft.com".to_string()),
         },
         Endpoint {
             name: "japan-east".to_string(),
-            key: std::env::var("AZURE_OPENAI_KEY_JAPAN_EAST").unwrap_or_else(|_| "YOUR_KEY_3".to_string()),
-            endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_JAPAN_EAST").unwrap_or_else(|_| "https://japaneast.api.cognitive.microsoft.com".to_string()),
+            key: std::env::var("AZURE_OPENAI_KEY_JAPAN_EAST")
+                .unwrap_or_else(|_| "YOUR_KEY_3".to_string()),
+            endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_JAPAN_EAST")
+                .unwrap_or_else(|_| "https://japaneast.api.cognitive.microsoft.com".to_string()),
         },
         Endpoint {
             name: "europe-west".to_string(),
-            key: std::env::var("AZURE_OPENAI_KEY_EUROPE_WEST").unwrap_or_else(|_| "YOUR_KEY_4".to_string()),
-            endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_EUROPE_WEST").unwrap_or_else(|_| "https://westeurope.api.cognitive.microsoft.com".to_string()),
+            key: std::env::var("AZURE_OPENAI_KEY_EUROPE_WEST")
+                .unwrap_or_else(|_| "YOUR_KEY_4".to_string()),
+            endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_EUROPE_WEST")
+                .unwrap_or_else(|_| "https://westeurope.api.cognitive.microsoft.com".to_string()),
         },
     ];
 
     // GitHubリポジトリ設定を.envから読み込み
     let mut github_repos = Vec::new();
-    
+
     // リポジトリ1
-    if let (Ok(owner), Ok(repo)) = (
-        std::env::var("REPO_OWNER_1"),
-        std::env::var("REPO_NAME_1"),
-    ) {
+    if let (Ok(owner), Ok(repo)) = (std::env::var("REPO_OWNER_1"), std::env::var("REPO_NAME_1")) {
         let max_files = std::env::var("REPO_MAX_FILES_1")
             .unwrap_or_else(|_| "30".to_string())
             .parse::<usize>()
             .unwrap_or(30);
-            
+
         github_repos.push(RepoInfo {
             owner,
             repo,
             max_files,
         });
     }
-    
+
     // リポジトリ2
-    if let (Ok(owner), Ok(repo)) = (
-        std::env::var("REPO_OWNER_2"),
-        std::env::var("REPO_NAME_2"),
-    ) {
+    if let (Ok(owner), Ok(repo)) = (std::env::var("REPO_OWNER_2"), std::env::var("REPO_NAME_2")) {
         let max_files = std::env::var("REPO_MAX_FILES_2")
             .unwrap_or_else(|_| "25".to_string())
             .parse::<usize>()
             .unwrap_or(25);
-            
+
         github_repos.push(RepoInfo {
             owner,
             repo,
             max_files,
         });
     }
-    
+
     // リポジトリ3
-    if let (Ok(owner), Ok(repo)) = (
-        std::env::var("REPO_OWNER_3"),
-        std::env::var("REPO_NAME_3"),
-    ) {
+    if let (Ok(owner), Ok(repo)) = (std::env::var("REPO_OWNER_3"), std::env::var("REPO_NAME_3")) {
         let max_files = std::env::var("REPO_MAX_FILES_3")
             .unwrap_or_else(|_| "20".to_string())
             .parse::<usize>()
             .unwrap_or(20);
-            
+
         github_repos.push(RepoInfo {
             owner,
             repo,
             max_files,
         });
     }
-    
+
     // .envから読み込めなかった場合のデフォルト設定
     if github_repos.is_empty() {
         github_repos = vec![
@@ -856,7 +858,7 @@ async fn main() -> Result<()> {
 
     // Azureエンドポイント
     let endpoints = Arc::new(endpoints);
-    
+
     // 同時実行数を.envから取得（デフォルトはコマンドライン引数）
     let concurrency = std::env::var("CONCURRENCY")
         .ok()
@@ -880,7 +882,7 @@ async fn main() -> Result<()> {
         for (j, debate_type) in debate_types.iter().enumerate() {
             // 同じリポジトリでも異なる視点で分析
             let endpoint_index = task_index % endpoints.len();
-            
+
             // タスク設定を記録
             task_configs.push((repo_info.clone(), debate_type.clone(), endpoint_index));
             task_index += 1;
@@ -888,20 +890,20 @@ async fn main() -> Result<()> {
             // 追加でタスクを作成してクレジット消費を増やす
             if i % 2 == 0 && j % 2 == 0 {
                 let extra_endpoint_index = (task_index + 2) % endpoints.len();
-                
+
                 // 追加タスクも記録
                 task_configs.push((repo_info.clone(), debate_type.clone(), extra_endpoint_index));
                 task_index += 1;
             }
         }
     }
-    
+
     // 記録したタスク設定を元にタスクを作成
     for (repo_info, debate_type, endpoint_index) in task_configs {
         let github_client_owned = github_client.clone();
         let endpoints_owned = endpoints.clone();
         let output_dir_owned = output_dir.clone();
-        
+
         tasks.push(tokio::spawn(async move {
             debate_runner(
                 github_client_owned,
@@ -910,7 +912,8 @@ async fn main() -> Result<()> {
                 debate_type,
                 endpoint_index,
                 output_dir_owned,
-            ).await
+            )
+            .await
         }));
     }
 
