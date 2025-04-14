@@ -94,6 +94,17 @@ struct GitHubTreeItem {
     url: Option<String>,
 }
 
+// `Clone`トレイトを実装して、所有権を簡単に移動できるようにする
+impl Clone for GitHubTreeItem {
+    fn clone(&self) -> Self {
+        GitHubTreeItem {
+            path: self.path.clone(),
+            item_type: self.item_type.clone(),
+            url: self.url.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct GitHubTree {
     tree: Vec<GitHubTreeItem>,
@@ -335,7 +346,8 @@ impl GitHubClient {
 
         // ファイル数を制限
         let max_files = repo_info.max_files.min(code_files.len());
-        let selected_files = &code_files[0..max_files];
+        // 所有権を渡す形に変更
+        let selected_files = code_files.into_iter().take(max_files).collect::<Vec<_>>();
 
         // 各ファイルの内容を並列で取得
         let mut file_infos = Vec::new();
@@ -353,9 +365,10 @@ impl GitHubClient {
                 let auth = auth_header.clone();
                 let repo = repo_path.clone();
                 let branch = branch.clone();
+                let file_path = file.path.clone(); // クローンして所有権を得る
 
                 async move {
-                    let file_path = &file.path;
+                    // 参照ではなく所有権のある値を使用
 
                     // ファイル内容のURL構築
                     let content_url = format!(
@@ -395,14 +408,14 @@ impl GitHubClient {
 
                                                     info!("✅ ファイル取得成功: {}", file_path);
                                                     Some(FileInfo {
-                                                        path: file_path.to_string(),
+                                                        path: file_path.clone(),
                                                         content,
                                                     })
                                                 }
                                                 Err(e) => {
                                                     error!(
                                                         "⚠️ ファイルデコードエラー: {} - {}",
-                                                        file_path, e
+                                                        &file_path, e
                                                     );
                                                     None
                                                 }
@@ -955,63 +968,49 @@ async fn main() -> Result<()> {
     info!("対象リポジトリ数: {}", github_repos.len());
 
     // タスク作成
-
     let mut tasks = Vec::new();
     let mut task_index = 0;
 
     // 各リポジトリと議論タイプの組み合わせでタスクを作成
+    // Vec<(RepoInfo, String, usize)>のタプルにして後で処理
+    let mut task_configs = Vec::new();
 
     for (i, repo_info) in github_repos.iter().enumerate() {
         for (j, debate_type) in debate_types.iter().enumerate() {
             // 同じリポジトリでも異なる視点で分析
             let endpoint_index = task_index % endpoints.len();
-
-            let repo_info_owned = repo_info.clone();
-            let debate_type_owned = debate_type.clone();
-            let output_dir_owned = output_dir.clone();
-            let github_client_owned = github_client.clone();
-            let endpoints_owned = endpoints.clone();
             
-            // ここではitemではなくマッチするすべての引数をきちんと渡す
-            let task = debate_runner(
-                github_client_owned,
-                endpoints_owned,
-                repo_info_owned,
-                debate_type_owned,
-                endpoint_index,
-                output_dir_owned,
-            );
-            tasks.push(tokio::spawn(async move {
-                task.await
-            }));
-
+            // タスク設定を記録
+            task_configs.push((repo_info.clone(), debate_type.clone(), endpoint_index));
             task_index += 1;
 
             // 追加でタスクを作成してクレジット消費を増やす
             if i % 2 == 0 && j % 2 == 0 {
                 let extra_endpoint_index = (task_index + 2) % endpoints.len();
-                let repo_info_owned = repo_info.clone();
-                let debate_type_owned = debate_type.clone();
-                let output_dir_owned = output_dir.clone();
-                let github_client_owned = github_client.clone();
-                let endpoints_owned = endpoints.clone();
                 
-                // ここでも同様に修正
-                let task = debate_runner(
-                    github_client_owned,
-                    endpoints_owned,
-                    repo_info_owned,
-                    debate_type_owned,
-                    extra_endpoint_index,
-                    output_dir_owned,
-                );
-                tasks.push(tokio::spawn(async move {
-                    task.await
-                }));
-
+                // 追加タスクも記録
+                task_configs.push((repo_info.clone(), debate_type.clone(), extra_endpoint_index));
                 task_index += 1;
             }
         }
+    }
+    
+    // 記録したタスク設定を元にタスクを作成
+    for (repo_info, debate_type, endpoint_index) in task_configs {
+        let github_client_owned = github_client.clone();
+        let endpoints_owned = endpoints.clone();
+        let output_dir_owned = output_dir.clone();
+        
+        tasks.push(tokio::spawn(async move {
+            debate_runner(
+                github_client_owned,
+                endpoints_owned,
+                repo_info,
+                debate_type,
+                endpoint_index,
+                output_dir_owned,
+            ).await
+        }));
     }
 
     // バッファリングして同時実行数を制限
