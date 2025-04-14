@@ -122,6 +122,11 @@ impl GitHubClient {
             header::ACCEPT,
             header::HeaderValue::from_static("application/vnd.github.v3+json"),
         );
+        // User-Agentヘッダーを追加（必須項目）
+        headers.insert(
+            header::USER_AGENT,
+            header::HeaderValue::from_static("deep-dive-llm-rust-client"),
+        );
 
         let client = reqwest::Client::builder()
             .default_headers(headers)
@@ -152,6 +157,7 @@ impl GitHubClient {
             .client
             .get(&files_url)
             .header(header::AUTHORIZATION, &auth_header)
+            .header(header::USER_AGENT, "deep-dive-llm-rust-client")
             .send()
             .await;
 
@@ -165,6 +171,7 @@ impl GitHubClient {
                 .client
                 .get(&files_url)
                 .header(header::AUTHORIZATION, &auth_header)
+                .header(header::USER_AGENT, "deep-dive-llm-rust-client")
                 .send()
                 .await;
         }
@@ -252,6 +259,7 @@ impl GitHubClient {
                     let response = client
                         .get(&content_url)
                         .header(header::AUTHORIZATION, auth)
+                        .header(header::USER_AGENT, "deep-dive-llm-rust-client")
                         .query(&[("ref", branch)])
                         .send()
                         .await;
