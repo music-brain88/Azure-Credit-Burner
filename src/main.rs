@@ -377,7 +377,7 @@ impl AzureOpenAIClient {
         AzureOpenAIClient {
             client,
             endpoint,
-            api_version: "2023-05-15".to_string(),
+            api_version: "2024-12-01-preview".to_string(),
         }
     }
 
@@ -658,7 +658,7 @@ async fn debate_runner(
         match openai_client
             .chat_completion(
                 &messages,
-                "gpt-4.5-preview", // 最大モデルを使用
+                "gpt-4.5-preview", // Azure用のモデルデプロイメント名に変更
                 4000,              // 長い出力
                 0.8,               // 適度な創造性
             )
