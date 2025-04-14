@@ -4,17 +4,16 @@
 use chrono::prelude::*;
 use reqwest::{self, header};
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
-use std::{collections::HashMap, path::Path, sync::Arc, time::Duration};
-use tokio::sync::Mutex;
+use serde_json::json;
+use std::{sync::Arc, time::Duration};
 use tokio::{fs, time};
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use clap::Parser;
 use dotenv::dotenv;
 use futures::{StreamExt, stream};
-use log::{error, info, warn};
+use log::{error, info};
 use simple_logger::SimpleLogger;
 
 // コマンドライン引数の定義
@@ -293,10 +292,12 @@ impl GitHubClient {
 
         let response = response.unwrap();
         if response.status() != 200 {
+            let status = response.status();
+            let error_text = response.text().await?;
             return Err(anyhow!(
                 "リポジトリ情報取得エラー: ステータス {}, レスポンス: {:?}",
-                response.status(),
-                response.text().await
+                status,
+                error_text
             ));
         }
 
@@ -517,10 +518,11 @@ impl AzureOpenAIClient {
                 openai_response.usage.total_tokens,
             ))
         } else {
+            let status = response.status();
             let error_text = response.text().await?;
             Err(anyhow!(
                 "OpenAI API エラー: ステータス {}, レスポンス: {}",
-                response.status(),
+                status,
                 error_text
             ))
         }
@@ -651,7 +653,7 @@ async fn save_response(
     // ファイル名を生成
     let now = Utc::now();
     let filename = format!(
-        "{}/{}_{}_{}_turn{}_{}.json",
+        "{}/{}_{}_{}_turn{}.json",
         repo_dir,
         debate_type.replace(" ", "_"),
         endpoint_name,
@@ -964,28 +966,48 @@ async fn main() -> Result<()> {
             // 同じリポジトリでも異なる視点で分析
             let endpoint_index = task_index % endpoints.len();
 
-            tasks.push(tokio::spawn(debate_runner(
-                github_client.clone(),
-                endpoints.clone(),
-                repo_info.clone(),
-                debate_type.clone(),
+            let repo_info_owned = repo_info.clone();
+            let debate_type_owned = debate_type.clone();
+            let output_dir_owned = output_dir.clone();
+            let github_client_owned = github_client.clone();
+            let endpoints_owned = endpoints.clone();
+            
+            // ここではitemではなくマッチするすべての引数をきちんと渡す
+            let task = debate_runner(
+                github_client_owned,
+                endpoints_owned,
+                repo_info_owned,
+                debate_type_owned,
                 endpoint_index,
-                output_dir.clone(),
-            )));
+                output_dir_owned,
+            );
+            tasks.push(tokio::spawn(async move {
+                task.await
+            }));
 
             task_index += 1;
 
             // 追加でタスクを作成してクレジット消費を増やす
             if i % 2 == 0 && j % 2 == 0 {
                 let extra_endpoint_index = (task_index + 2) % endpoints.len();
-                tasks.push(tokio::spawn(debate_runner(
-                    github_client.clone(),
-                    endpoints.clone(),
-                    repo_info.clone(),
-                    debate_type.clone(),
+                let repo_info_owned = repo_info.clone();
+                let debate_type_owned = debate_type.clone();
+                let output_dir_owned = output_dir.clone();
+                let github_client_owned = github_client.clone();
+                let endpoints_owned = endpoints.clone();
+                
+                // ここでも同様に修正
+                let task = debate_runner(
+                    github_client_owned,
+                    endpoints_owned,
+                    repo_info_owned,
+                    debate_type_owned,
                     extra_endpoint_index,
-                    output_dir.clone(),
-                )));
+                    output_dir_owned,
+                );
+                tasks.push(tokio::spawn(async move {
+                    task.await
+                }));
 
                 task_index += 1;
             }
@@ -999,7 +1021,7 @@ async fn main() -> Result<()> {
         active_tasks.push(task);
 
         if active_tasks.len() >= concurrency {
-            let (completed, index, remaining) = futures::future::select_all(active_tasks).await;
+            let (completed, _index, remaining) = futures::future::select_all(active_tasks).await;
 
             // 結果を処理
             match completed {
@@ -1022,7 +1044,7 @@ async fn main() -> Result<()> {
     // 残りのタスクを完了まで待機
 
     while !active_tasks.is_empty() {
-        let (completed, index, remaining) = futures::future::select_all(active_tasks).await;
+        let (completed, _index, remaining) = futures::future::select_all(active_tasks).await;
 
         match completed {
             Ok(Ok(_)) => {
