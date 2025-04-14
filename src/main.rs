@@ -277,11 +277,13 @@ impl GitHubClient {
                                                     let content = String::from_utf8_lossy(&decoded)
                                                         .to_string();
 
-                                                    // 大きなファイルは先頭部分のみ
+                                                    // 大きなファイルは先頭部分のみ（文字単位で安全に切り取り）
                                                     let content = if content.len() > 10000 {
+                                                        // 文字単位で処理して安全に切り取る
+                                                        let truncated: String = content.chars().take(10000).collect();
                                                         format!(
                                                             "{}...\n(内容省略)...",
-                                                            &content[0..10000]
+                                                            truncated
                                                         )
                                                     } else {
                                                         content
@@ -452,9 +454,11 @@ fn generate_repo_debate_prompt(
 
         file_samples.push_str(&format!("\n--- {} ---\n", file.path));
 
-        // 長すぎる場合は一部を表示
+        // 長すぎる場合は一部を表示（文字単位で安全に切り取り）
         let content = if file.content.len() > 2000 {
-            format!("{}...\n(省略)...", &file.content[0..2000])
+            // 文字単位で処理して安全に切り取る
+            let truncated: String = file.content.chars().take(2000).collect();
+            format!("{}...\n(省略)...", truncated)
         } else {
             file.content.clone()
         };
@@ -472,7 +476,7 @@ fn generate_repo_debate_prompt(
                 ("debate_type".to_string(), debate_type.to_string()),
                 ("file_count".to_string(), repo_files.len().to_string()),
                 ("file_summary".to_string(), file_summary),
-                ("readme".to_string(), readme_content[..readme_content.len().min(1000)].to_string()),
+                ("readme".to_string(), readme_content.chars().take(1000).collect::<String>()),
                 ("file_samples".to_string(), file_samples),
             ];
             
@@ -514,7 +518,7 @@ fn generate_repo_debate_prompt(
                 repo_info.repo,
                 repo_files.len(),
                 file_summary,
-                &readme_content[..readme_content.len().min(1000)],
+                &readme_content.chars().take(1000).collect::<String>(),
                 file_samples,
                 debate_type
             )
