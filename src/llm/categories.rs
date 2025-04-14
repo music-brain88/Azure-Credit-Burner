@@ -1,6 +1,6 @@
 // リポジトリ分析用の質問カテゴリと質問文を管理するモジュール
-use std::collections::HashMap;
 use anyhow::{Result, anyhow};
+use std::collections::HashMap;
 
 // カテゴリごとの質問を定義
 type QuestionMap = HashMap<String, Vec<String>>;
@@ -8,7 +8,7 @@ type QuestionMap = HashMap<String, Vec<String>>;
 // 質問マップを初期化
 fn init_questions() -> QuestionMap {
     let mut questions = HashMap::new();
-    
+
     // アーキテクチャに関する質問
     questions.insert(
         "architecture".to_string(), 
@@ -18,7 +18,7 @@ fn init_questions() -> QuestionMap {
             "このシステムのスケーラビリティに関するアーキテクチャ上の考慮点を分析してください。将来の拡張や変更に対してどのように設計されていますか？".to_string(),
         ]
     );
-    
+
     // パフォーマンスに関する質問
     questions.insert(
         "performance".to_string(), 
@@ -28,7 +28,7 @@ fn init_questions() -> QuestionMap {
             "このコードベースのデータ処理パターンを分析してください。大量のデータを扱う場合のパフォーマンス特性はどうでしょうか？".to_string(),
         ]
     );
-    
+
     // セキュリティに関する質問
     questions.insert(
         "security".to_string(), 
@@ -38,7 +38,7 @@ fn init_questions() -> QuestionMap {
             "このコードベースでデータの検証と入力サニタイズはどのように行われていますか？潜在的な脆弱性や改善点はありますか？".to_string(),
         ]
     );
-    
+
     // テスト品質に関する質問
     questions.insert(
         "testing".to_string(), 
@@ -48,7 +48,7 @@ fn init_questions() -> QuestionMap {
             "このコードベースのエラーハンドリングとエッジケースの処理を分析してください。例外処理とバリデーションは十分に行われていますか？".to_string(),
         ]
     );
-    
+
     // ドメイン分析に関する質問
     questions.insert(
         "domain".to_string(), 
@@ -58,7 +58,7 @@ fn init_questions() -> QuestionMap {
             "このコードベースのビジネスルールとドメインロジックのカプセル化方法を分析してください。ドメインの変更に対してどの程度柔軟に対応できますか？".to_string(),
         ]
     );
-    
+
     // 分散システムに関する質問
     questions.insert(
         "distributed".to_string(), 
@@ -68,7 +68,7 @@ fn init_questions() -> QuestionMap {
             "このコードベースのCAP定理（一貫性、可用性、分断耐性）におけるトレードオフを分析してください。システム設計でどのような選択がされていますか？".to_string(),
         ]
     );
-    
+
     // コード保守性に関する質問
     questions.insert(
         "maintainability".to_string(), 
@@ -78,19 +78,19 @@ fn init_questions() -> QuestionMap {
             "このコードベースの技術的負債と将来のリファクタリングの機会を特定してください。コードの品質を向上させるための具体的な提案はありますか？".to_string(),
         ]
     );
-    
+
     questions
 }
 
 // 特定のカテゴリから質問を取得する
 pub fn get_question(category: &str, index: usize) -> Result<String> {
     let questions = init_questions();
-    
+
     // カテゴリが存在するか確認
     if let Some(category_questions) = questions.get(category) {
         // インデックスが範囲内かチェック
         let actual_index = index % category_questions.len();
-        
+
         // 質問を返す
         Ok(category_questions[actual_index].clone())
     } else {

@@ -70,7 +70,7 @@ pub mod openai_response {
     #[derive(Clone, Debug, Deserialize, Serialize)]
     pub struct ResponseData {
         pub repo: String,
-        pub debate_type: String, 
+        pub debate_type: String,
         pub turn: usize,
         pub timestamp: String,
         pub endpoint: String,

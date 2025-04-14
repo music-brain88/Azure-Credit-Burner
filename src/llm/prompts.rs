@@ -11,39 +11,47 @@ pub type TemplateVariables = Vec<(String, String)>;
 pub fn load_template(template_name: &str) -> Result<String> {
     // テンプレートディレクトリのパス
     let template_dir = "prompts";
-    
+
     // テンプレートファイルのパス
     let template_path = Path::new(template_dir).join(format!("{}.txt", template_name));
-    
+
     // ファイルが存在するか確認
     if !template_path.exists() {
-        return Err(anyhow!("テンプレートファイル {} が見つかりません", template_path.display()));
+        return Err(anyhow!(
+            "テンプレートファイル {} が見つかりません",
+            template_path.display()
+        ));
     }
-    
+
     // テンプレートファイルを読み込む
-    let template_content = fs::read_to_string(&template_path)
-        .map_err(|e| anyhow!("テンプレートファイル {} の読み込みに失敗: {}", template_path.display(), e))?;
-    
+    let template_content = fs::read_to_string(&template_path).map_err(|e| {
+        anyhow!(
+            "テンプレートファイル {} の読み込みに失敗: {}",
+            template_path.display(),
+            e
+        )
+    })?;
+
     Ok(template_content)
 }
 
 // テンプレート内の変数を置換
 pub fn render_template(template: &str, variables: &TemplateVariables) -> String {
     let mut rendered = template.to_string();
-    
+
     // 各変数を置換
     for (key, value) in variables {
         let placeholder = format!("{{{{{}}}}}", key);
         rendered = rendered.replace(&placeholder, value);
     }
-    
+
     rendered
 }
 
 // デフォルトテンプレートのマップを取得
 pub fn get_default_templates() -> HashMap<String, String> {
     let mut templates = HashMap::new();
-    
+
     // リポジトリ分析用テンプレート
     templates.insert(
         "repo_analysis".to_string(),
@@ -74,29 +82,34 @@ pub fn get_default_templates() -> HashMap<String, String> {
 
 できるだけ具体的なコード例や技術的詳細に基づいて、深い洞察を提供してください。"#.to_string(),
     );
-    
+
     templates
 }
 
 // テンプレートをファイルシステムに保存
 pub fn save_default_templates() -> Result<()> {
     let templates = get_default_templates();
-    
+
     // テンプレートディレクトリのパス
     let template_dir = "prompts";
-    
+
     // ディレクトリが存在しない場合は作成
     if !Path::new(template_dir).exists() {
         fs::create_dir_all(template_dir)
             .map_err(|e| anyhow!("テンプレートディレクトリの作成に失敗: {}", e))?;
     }
-    
+
     // 各テンプレートをファイルに保存
     for (name, content) in templates {
         let file_path = Path::new(template_dir).join(format!("{}.txt", name));
-        fs::write(&file_path, content)
-            .map_err(|e| anyhow!("テンプレートファイル {} の保存に失敗: {}", file_path.display(), e))?;
+        fs::write(&file_path, content).map_err(|e| {
+            anyhow!(
+                "テンプレートファイル {} の保存に失敗: {}",
+                file_path.display(),
+                e
+            )
+        })?;
     }
-    
+
     Ok(())
 }

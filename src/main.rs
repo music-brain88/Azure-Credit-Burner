@@ -5,14 +5,14 @@ use chrono::prelude::*;
 use reqwest::{self, header};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{sync::Arc, time::Duration, path::Path};
-use tokio::{fs, time, process::Command};
+use std::{path::Path, sync::Arc, time::Duration};
+use tokio::{fs, process::Command, time};
 
-use anyhow::{anyhow, bail, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use anyhow::{Result, anyhow, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use clap::Parser;
 use dotenv::dotenv;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use ignore::{Walk, WalkBuilder};
 use log::{error, info};
 use simple_logger::SimpleLogger;
@@ -23,9 +23,7 @@ mod llm;
 use llm::categories::{self, get_category_japanese};
 use llm::schemas::{
     github_response::{FileInfo, RepoInfo},
-    openai_response::{
-        ChatMessage, Endpoint, OpenAIResponse, ResponseData,
-    },
+    openai_response::{ChatMessage, Endpoint, OpenAIResponse, ResponseData},
 };
 
 // コマンドライン引数の定義
@@ -125,8 +123,8 @@ struct GitHubClient {
 
 impl GitHubClient {
     fn new(token: String, output_dir: String, max_file_size: usize) -> Self {
-        GitHubClient { 
-            token, 
+        GitHubClient {
+            token,
             output_dir,
             max_file_size,
         }
@@ -134,57 +132,82 @@ impl GitHubClient {
 
     // リポジトリをクローンする
     async fn clone_repository(&self, repo_info: &RepoInfo) -> Result<String> {
-        let repo_dir = format!("{}/repos/{}_{}", self.output_dir, repo_info.owner, repo_info.repo);
-        
+        let repo_dir = format!(
+            "{}/repos/{}_{}",
+            self.output_dir, repo_info.owner, repo_info.repo
+        );
+
         // すでにクローン済みかチェック
         if Path::new(&repo_dir).exists() {
-            info!("🔄 リポジトリはすでにクローン済み: {}/{}", repo_info.owner, repo_info.repo);
+            info!(
+                "🔄 リポジトリはすでにクローン済み: {}/{}",
+                repo_info.owner, repo_info.repo
+            );
         } else {
             // ディレクトリ作成
             fs::create_dir_all(Path::new(&repo_dir).parent().unwrap()).await?;
-            
+
             // git clone コマンド実行
-            let clone_url = format!("https://{}@github.com/{}/{}.git", 
-                self.token, repo_info.owner, repo_info.repo);
-            
-            info!("🔽 リポジトリをクローン中: {}/{}", repo_info.owner, repo_info.repo);
-            
+            let clone_url = format!(
+                "https://{}@github.com/{}/{}.git",
+                self.token, repo_info.owner, repo_info.repo
+            );
+
+            info!(
+                "🔽 リポジトリをクローン中: {}/{}",
+                repo_info.owner, repo_info.repo
+            );
+
             let output = Command::new("git")
                 .args(["clone", "--depth", "1", &clone_url, &repo_dir])
                 .output()
                 .await?;
-            
+
             if !output.status.success() {
                 let error = String::from_utf8_lossy(&output.stderr);
                 return Err(anyhow!("リポジトリのクローンに失敗: {}", error));
             }
-            
-            info!("✅ リポジトリのクローン成功: {}/{}", repo_info.owner, repo_info.repo);
+
+            info!(
+                "✅ リポジトリのクローン成功: {}/{}",
+                repo_info.owner, repo_info.repo
+            );
         }
-        
+
         Ok(repo_dir)
     }
 
     // コードファイルを判定する関数
     fn is_code_file(path: &str) -> bool {
         let code_extensions = [
-            ".py", ".js", ".ts", ".java", ".c", ".cpp", ".h", ".hpp", ".go", 
-            ".rs", ".rb", ".php", ".md", ".cs", ".jsx", ".tsx", ".css", ".scss", 
-            ".less", ".html", ".xml", ".json", ".yaml", ".yml", ".toml", ".sh", 
-            ".bash", ".ps1", ".sql", ".graphql", ".proto", ".kt", ".swift"
+            ".py", ".js", ".ts", ".java", ".c", ".cpp", ".h", ".hpp", ".go", ".rs", ".rb", ".php",
+            ".md", ".cs", ".jsx", ".tsx", ".css", ".scss", ".less", ".html", ".xml", ".json",
+            ".yaml", ".yml", ".toml", ".sh", ".bash", ".ps1", ".sql", ".graphql", ".proto", ".kt",
+            ".swift",
         ];
-        
+
         code_extensions.iter().any(|&ext| path.ends_with(ext))
     }
 
     // 除外すべきディレクトリを判定する関数
     fn is_excluded_dir(path: &str) -> bool {
         let excluded_dirs = [
-            "/.git/", "/node_modules/", "/target/", "/build/", "/dist/", 
-            "/bin/", "/obj/", "/.idea/", "/.vscode/", "/vendor/", 
-            "/deps/", "/_build/", "/venv/", "/__pycache__/"
+            "/.git/",
+            "/node_modules/",
+            "/target/",
+            "/build/",
+            "/dist/",
+            "/bin/",
+            "/obj/",
+            "/.idea/",
+            "/.vscode/",
+            "/vendor/",
+            "/deps/",
+            "/_build/",
+            "/venv/",
+            "/__pycache__/",
         ];
-        
+
         excluded_dirs.iter().any(|&dir| path.contains(dir))
     }
 
@@ -194,21 +217,21 @@ impl GitHubClient {
             "⬇️ リポジトリからファイル取得中: {}/{}",
             repo_info.owner, repo_info.repo
         );
-        
+
         // リポジトリをクローン
         let repo_dir = self.clone_repository(repo_info).await?;
-        
+
         // ファイル一覧を取得
         let mut files = Vec::new();
-        
+
         // ignoreクレートを使ってgitignoreなどを考慮したファイル走査
         let walker = WalkBuilder::new(&repo_dir)
-            .standard_filters(true)  // .gitignoreを考慮
-            .hidden(false)           // 隠しファイルも対象に
+            .standard_filters(true) // .gitignoreを考慮
+            .hidden(false) // 隠しファイルも対象に
             .build();
-            
+
         let mut all_files = Vec::new();
-        
+
         // ファイルをすべて収集
         for result in walker {
             match result {
@@ -216,19 +239,19 @@ impl GitHubClient {
                     let path = entry.path();
                     if path.is_file() {
                         let path_str = path.to_string_lossy().to_string();
-                        
+
                         // コードファイルかつ除外対象でないファイルのみ
                         if Self::is_code_file(&path_str) && !Self::is_excluded_dir(&path_str) {
                             all_files.push(path.to_path_buf());
                         }
                     }
-                },
+                }
                 Err(e) => {
                     error!("⚠️ ファイル列挙エラー: {}", e);
                 }
             }
         }
-        
+
         // 優先度の高いファイルを先頭に
         all_files.sort_by(|a, b| {
             let a_str = a.to_string_lossy();
@@ -244,39 +267,44 @@ impl GitHubClient {
                 a.cmp(b)
             }
         });
-        
+
         // ファイル数を制限
         let max_files = repo_info.max_files.min(all_files.len());
         let selected_files = all_files.into_iter().take(max_files);
-        
+
         // ファイル内容を読み込む
         for path in selected_files {
             // 相対パスを取得
-            let rel_path = path.strip_prefix(&repo_dir)
+            let rel_path = path
+                .strip_prefix(&repo_dir)
                 .map_err(|e| anyhow!("パス変換エラー: {}", e))?
                 .to_string_lossy()
                 .to_string();
-                
+
             // ファイルサイズをチェック
             match fs::metadata(&path).await {
                 Ok(metadata) => {
                     // 大きすぎるファイルはスキップ
                     if metadata.len() > self.max_file_size as u64 {
-                        info!("⏩ サイズが大きいためスキップ: {} ({} bytes)", rel_path, metadata.len());
+                        info!(
+                            "⏩ サイズが大きいためスキップ: {} ({} bytes)",
+                            rel_path,
+                            metadata.len()
+                        );
                         continue;
                     }
-                },
+                }
                 Err(e) => {
                     error!("⚠️ ファイルメタデータ取得エラー: {} - {}", rel_path, e);
                     continue;
                 }
             }
-                
+
             // ファイル内容を読み込む
             match fs::read_to_string(&path).await {
                 Ok(content) => {
                     info!("✅ ファイル読み込み成功: {}", rel_path);
-                    
+
                     // 長すぎるファイルは先頭部分のみ
                     let content = if content.len() > self.max_file_size {
                         // 文字単位で処理して安全に切り取る
@@ -285,24 +313,24 @@ impl GitHubClient {
                     } else {
                         content
                     };
-                    
+
                     files.push(FileInfo {
                         path: rel_path,
                         content,
                     });
-                },
+                }
                 Err(e) => {
                     error!("⚠️ ファイル読み込みエラー: {} - {}", rel_path, e);
                 }
             }
         }
-        
+
         info!("🗂️ 取得ファイル数: {}/{}", files.len(), max_files);
-        
+
         if files.is_empty() {
             bail!("リポジトリからファイルを取得できませんでした");
         }
-        
+
         Ok(files)
     }
 }
@@ -599,7 +627,7 @@ async fn debate_runner(
 
     // 会話ループ
     let mut turn = 1;
-    while turn <= 20 {
+    while turn <= 10 {
         // 最大20ターンまでに制限
         info!(
             "[{}] 分析実行中: {}/{} ({}) - ターン {}",
@@ -610,9 +638,9 @@ async fn debate_runner(
         match openai_client
             .chat_completion(
                 &messages,
-                "gpt-4.5-preview", // 最大モデルを使用
-                4000,              // 長い出力
-                0.8,               // 適度な創造性
+                "gpt-4-32k", // 最大モデルを使用
+                4000,        // 長い出力
+                0.8,         // 適度な創造性
             )
             .await
         {
@@ -805,7 +833,11 @@ async fn main() -> Result<()> {
 
     // GitHubクライアント (.envまたはコマンドライン引数から)
     let github_token = std::env::var("GITHUB_TOKEN").unwrap_or_else(|_| args.github_token.clone());
-    let github_client = Arc::new(GitHubClient::new(github_token, output_dir.clone(), args.max_file_size));
+    let github_client = Arc::new(GitHubClient::new(
+        github_token,
+        output_dir.clone(),
+        args.max_file_size,
+    ));
 
     // Azureエンドポイント
     let endpoints = Arc::new(endpoints);
