@@ -8,11 +8,11 @@ use serde_json::json;
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::{fs, process::Command, time};
 
-use anyhow::{anyhow, bail, Result};
-use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
+use anyhow::{Result, anyhow, bail};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use clap::Parser;
 use dotenv::dotenv;
-use futures::{stream, StreamExt};
+use futures::{StreamExt, stream};
 use ignore::{Walk, WalkBuilder};
 use log::{error, info};
 use simple_logger::SimpleLogger;
