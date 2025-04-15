@@ -17,6 +17,8 @@ use ignore::{Walk, WalkBuilder};
 use log::{error, info};
 use simple_logger::SimpleLogger;
 use walkdir::WalkDir;
+use std::collections::HashMap;
+use std::env;
 
 // llmディレクトリのスキーマを利用
 mod llm;
@@ -36,23 +38,27 @@ use llm::schemas::{
 struct Args {
     /// GitHubのアクセストークン
     #[clap(long, env = "GITHUB_TOKEN")]
-    github_token: String,
+    github_token: Option<String>,
 
     /// 保存先ディレクトリ
-    #[clap(long, default_value = "llm_debates")]
-    output_dir: String,
+    #[clap(long)]
+    output_dir: Option<String>,
 
     /// 同時実行数
-    #[clap(long, default_value = "8")]
-    concurrency: usize,
+    #[clap(long)]
+    concurrency: Option<usize>,
 
     /// ファイルあたりの最大処理数
-    #[clap(long, default_value = "50")]
-    max_files: usize,
+    #[clap(long)]
+    max_files: Option<usize>,
 
     /// 最大ファイルサイズ（バイト）
-    #[clap(long, default_value = "100000")]
-    max_file_size: usize,
+    #[clap(long)]
+    max_file_size: Option<usize>,
+
+    /// 設定ファイルのパス
+    #[clap(long, default_value = "config.json")]
+    config_file: String,
 }
 
 // 深掘り質問カテゴリ
@@ -133,7 +139,7 @@ impl GitHubClient {
     // リポジトリをクローンする
     async fn clone_repository(&self, repo_info: &RepoInfo) -> Result<String> {
         let repo_dir = format!(
-            "{}/repos/{}_{}",
+            "{}/repos/{}_{}", 
             self.output_dir, repo_info.owner, repo_info.repo
         );
 
@@ -709,6 +715,72 @@ async fn debate_runner(
     Ok(())
 }
 
+// 設定ファイル用構造体
+#[derive(Serialize, Deserialize, Debug, Clone)]
+struct Config {
+    github_token: String,
+    output_dir: String,
+    endpoints: Vec<Endpoint>,
+    repos: Vec<RepoInfo>,
+    concurrency: usize,
+    max_files: usize,
+    max_file_size: usize,
+}
+
+// 環境変数の参照を解決する関数
+fn resolve_env_vars(input: &str) -> String {
+    let mut result = input.to_string();
+    // ${VAR_NAME} 形式の環境変数参照を検出して置換
+    let env_var_regex = regex::Regex::new(r"\$\{([A-Za-z0-9_]+)\}").unwrap();
+    
+    // 一度すべての環境変数参照を見つけてマップに保存
+    let mut replacements = Vec::new();
+    
+    // まず置換対象をすべて収集
+    for captures in env_var_regex.captures_iter(&input) {
+        let full_match = captures.get(0).unwrap().as_str().to_string();
+        let var_name = captures.get(1).unwrap().as_str().to_string();
+        
+        let replacement = if let Ok(var_value) = env::var(&var_name) {
+            var_value
+        } else {
+            // 環境変数が見つからない場合は空文字に置換
+            error!("⚠️ 環境変数が見つかりません: {}", var_name);
+            String::new()
+        };
+        
+        replacements.push((full_match, replacement));
+    }
+    
+    // 一括で置換
+    for (pattern, replacement) in replacements {
+        result = result.replace(&pattern, &replacement);
+    }
+    
+    result
+}
+
+// 設定ファイルを読み込む関数
+async fn load_config(config_path: &str) -> Result<Config> {
+    info!("📝 設定ファイルを読み込み中: {}", config_path);
+    
+    // 設定ファイルが存在するか確認
+    if !Path::new(config_path).exists() {
+        return Err(anyhow!("設定ファイルが見つかりません: {}", config_path));
+    }
+    
+    // ファイル読み込み
+    let config_text = fs::read_to_string(config_path).await?;
+    
+    // 環境変数の参照を解決
+    let resolved_config = resolve_env_vars(&config_text);
+    
+    // JSONをパース
+    let config: Config = serde_json::from_str(&resolved_config)?;
+    
+    Ok(config)
+}
+
 // メイン関数
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -724,135 +796,120 @@ async fn main() -> Result<()> {
     // コマンドライン引数を解析
     let args = Args::parse();
 
+    // 設定ファイルを読み込み
+    let mut config = match load_config(&args.config_file).await {
+        Ok(config) => {
+            info!("✅ 設定ファイルを読み込みました: {}", args.config_file);
+            config
+        },
+        Err(e) => {
+            info!("⚠️ 設定ファイルの読み込みに失敗しました: {}。デフォルト設定を使用します。", e);
+            
+            // デフォルト設定
+            Config {
+                github_token: std::env::var("GITHUB_TOKEN").unwrap_or_else(|_| "".to_string()),
+                output_dir: "llm_debates".to_string(),
+                endpoints: vec![
+                    Endpoint {
+                        name: "east-us".to_string(),
+                        key: std::env::var("AZURE_OPENAI_KEY_EAST_US")
+                            .unwrap_or_else(|_| "YOUR_KEY_1".to_string()),
+                        endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_EAST_US")
+                            .unwrap_or_else(|_| "https://eastus.api.cognitive.microsoft.com".to_string()),
+                    },
+                    Endpoint {
+                        name: "west-us".to_string(),
+                        key: std::env::var("AZURE_OPENAI_KEY_WEST_US")
+                            .unwrap_or_else(|_| "YOUR_KEY_2".to_string()),
+                        endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_WEST_US")
+                            .unwrap_or_else(|_| "https://westus.api.cognitive.microsoft.com".to_string()),
+                    },
+                    Endpoint {
+                        name: "japan-east".to_string(),
+                        key: std::env::var("AZURE_OPENAI_KEY_JAPAN_EAST")
+                            .unwrap_or_else(|_| "YOUR_KEY_3".to_string()),
+                        endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_JAPAN_EAST")
+                            .unwrap_or_else(|_| "https://japaneast.api.cognitive.microsoft.com".to_string()),
+                    },
+                    Endpoint {
+                        name: "europe-west".to_string(),
+                        key: std::env::var("AZURE_OPENAI_KEY_EUROPE_WEST")
+                            .unwrap_or_else(|_| "YOUR_KEY_4".to_string()),
+                        endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_EUROPE_WEST")
+                            .unwrap_or_else(|_| "https://westeurope.api.cognitive.microsoft.com".to_string()),
+                    },
+                ],
+                repos: vec![
+                    RepoInfo {
+                        owner: "your-org".to_string(),
+                        repo: "your-private-repo1".to_string(),
+                        max_files: 50,
+                    },
+                    RepoInfo {
+                        owner: "your-org".to_string(),
+                        repo: "your-private-repo2".to_string(),
+                        max_files: 50,
+                    },
+                    RepoInfo {
+                        owner: "your-org".to_string(),
+                        repo: "your-private-repo3".to_string(),
+                        max_files: 50,
+                    },
+                ],
+                concurrency: 8,
+                max_files: 50,
+                max_file_size: 100000,
+            }
+        }
+    };
+
+    // コマンドライン引数で上書き
+    if let Some(token) = args.github_token {
+        config.github_token = token;
+    }
+    
+    if let Some(output_dir) = args.output_dir {
+        config.output_dir = output_dir;
+    }
+    
+    if let Some(concurrency) = args.concurrency {
+        config.concurrency = concurrency;
+    }
+    
+    if let Some(max_files) = args.max_files {
+        config.max_files = max_files;
+    }
+    
+    if let Some(max_file_size) = args.max_file_size {
+        config.max_file_size = max_file_size;
+    }
+
     // ベースディレクトリ作成
-    // .env設定または引数の値を使用
-    let output_dir = std::env::var("OUTPUT_DIR").unwrap_or_else(|_| args.output_dir.clone());
-    fs::create_dir_all(&output_dir).await?;
+    fs::create_dir_all(&config.output_dir).await?;
 
-    // Azure OpenAIエンドポイント設定を.envから取得
-    let endpoints = vec![
-        Endpoint {
-            name: "east-us".to_string(),
-            key: std::env::var("AZURE_OPENAI_KEY_EAST_US")
-                .unwrap_or_else(|_| "YOUR_KEY_1".to_string()),
-            endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_EAST_US")
-                .unwrap_or_else(|_| "https://eastus.api.cognitive.microsoft.com".to_string()),
-        },
-        Endpoint {
-            name: "west-us".to_string(),
-            key: std::env::var("AZURE_OPENAI_KEY_WEST_US")
-                .unwrap_or_else(|_| "YOUR_KEY_2".to_string()),
-            endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_WEST_US")
-                .unwrap_or_else(|_| "https://westus.api.cognitive.microsoft.com".to_string()),
-        },
-        Endpoint {
-            name: "japan-east".to_string(),
-            key: std::env::var("AZURE_OPENAI_KEY_JAPAN_EAST")
-                .unwrap_or_else(|_| "YOUR_KEY_3".to_string()),
-            endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_JAPAN_EAST")
-                .unwrap_or_else(|_| "https://japaneast.api.cognitive.microsoft.com".to_string()),
-        },
-        Endpoint {
-            name: "europe-west".to_string(),
-            key: std::env::var("AZURE_OPENAI_KEY_EUROPE_WEST")
-                .unwrap_or_else(|_| "YOUR_KEY_4".to_string()),
-            endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_EUROPE_WEST")
-                .unwrap_or_else(|_| "https://westeurope.api.cognitive.microsoft.com".to_string()),
-        },
-    ];
+    // 設定情報をログに出力
+    info!("🔧 設定情報:");
+    info!("📂 出力ディレクトリ: {}", config.output_dir);
+    info!("🔄 同時実行数: {}", config.concurrency);
+    info!("📊 リポジトリ数: {}", config.repos.len());
+    info!("📄 最大ファイル数: {}", config.max_files);
+    info!("📦 最大ファイルサイズ: {} バイト", config.max_file_size);
 
-    // GitHubリポジトリ設定を.envから読み込み
-    let mut github_repos = Vec::new();
+    // GitHubクライアント
+    let github_client = Arc::new(GitHubClient::new(
+        config.github_token,
+        config.output_dir.clone(),
+        config.max_file_size,
+    ));
 
-    // リポジトリ1
-    if let (Ok(owner), Ok(repo)) = (std::env::var("REPO_OWNER_1"), std::env::var("REPO_NAME_1")) {
-        let max_files = std::env::var("REPO_MAX_FILES_1")
-            .unwrap_or_else(|_| "50".to_string())
-            .parse::<usize>()
-            .unwrap_or(50);
-
-        github_repos.push(RepoInfo {
-            owner,
-            repo,
-            max_files,
-        });
-    }
-
-    // リポジトリ2
-    if let (Ok(owner), Ok(repo)) = (std::env::var("REPO_OWNER_2"), std::env::var("REPO_NAME_2")) {
-        let max_files = std::env::var("REPO_MAX_FILES_2")
-            .unwrap_or_else(|_| "50".to_string())
-            .parse::<usize>()
-            .unwrap_or(50);
-
-        github_repos.push(RepoInfo {
-            owner,
-            repo,
-            max_files,
-        });
-    }
-
-    // リポジトリ3
-    if let (Ok(owner), Ok(repo)) = (std::env::var("REPO_OWNER_3"), std::env::var("REPO_NAME_3")) {
-        let max_files = std::env::var("REPO_MAX_FILES_3")
-            .unwrap_or_else(|_| "50".to_string())
-            .parse::<usize>()
-            .unwrap_or(50);
-
-        github_repos.push(RepoInfo {
-            owner,
-            repo,
-            max_files,
-        });
-    }
-
-    // .envから読み込めなかった場合のデフォルト設定
-    if github_repos.is_empty() {
-        github_repos = vec![
-            RepoInfo {
-                owner: "your-org".to_string(),
-                repo: "your-private-repo1".to_string(),
-                max_files: 50,
-            },
-            RepoInfo {
-                owner: "your-org".to_string(),
-                repo: "your-private-repo2".to_string(),
-                max_files: 50,
-            },
-            RepoInfo {
-                owner: "your-org".to_string(),
-                repo: "your-private-repo3".to_string(),
-                max_files: 50,
-            },
-        ];
-    }
+    // Azureエンドポイント
+    let endpoints = Arc::new(config.endpoints);
 
     // 議論タイプ
     let debate_types = get_debate_types();
 
-    // GitHubクライアント (.envまたはコマンドライン引数から)
-    let github_token = std::env::var("GITHUB_TOKEN").unwrap_or_else(|_| args.github_token.clone());
-    let github_client = Arc::new(GitHubClient::new(
-        github_token,
-        output_dir.clone(),
-        args.max_file_size,
-    ));
-
-    // Azureエンドポイント
-    let endpoints = Arc::new(endpoints);
-
-    // 同時実行数を.envから取得（デフォルトはコマンドライン引数）
-    let concurrency = std::env::var("CONCURRENCY")
-        .ok()
-        .and_then(|s| s.parse::<usize>().ok())
-        .unwrap_or(args.concurrency);
-
     // 開始メッセージ
     info!("💰💻 Azure Credit Burner 起動中... 💰💻");
-    info!("同時実行数: {}", concurrency);
-    info!("対象リポジトリ数: {}", github_repos.len());
-    info!("ファイル数上限: {}", args.max_files);
-    info!("ファイルサイズ上限: {} バイト", args.max_file_size);
 
     // タスク作成
     let mut tasks = Vec::new();
@@ -862,7 +919,7 @@ async fn main() -> Result<()> {
     // Vec<(RepoInfo, String, usize)>のタプルにして後で処理
     let mut task_configs = Vec::new();
 
-    for (i, repo_info) in github_repos.iter().enumerate() {
+    for (i, repo_info) in config.repos.iter().enumerate() {
         for (j, debate_type) in debate_types.iter().enumerate() {
             // 同じリポジトリでも異なる視点で分析
             let endpoint_index = task_index % endpoints.len();
@@ -886,7 +943,7 @@ async fn main() -> Result<()> {
     for (repo_info, debate_type, endpoint_index) in task_configs {
         let github_client_owned = github_client.clone();
         let endpoints_owned = endpoints.clone();
-        let output_dir_owned = output_dir.clone();
+        let output_dir_owned = config.output_dir.clone();
 
         tasks.push(tokio::spawn(async move {
             debate_runner(
@@ -907,7 +964,7 @@ async fn main() -> Result<()> {
     for task in tasks {
         active_tasks.push(task);
 
-        if active_tasks.len() >= concurrency {
+        if active_tasks.len() >= config.concurrency {
             let (completed, _index, remaining) = futures::future::select_all(active_tasks).await;
 
             // 結果を処理
@@ -950,16 +1007,4 @@ async fn main() -> Result<()> {
     info!("✅ すべてのタスク完了！");
 
     Ok(())
-}
-
-// 設定ファイル用構造体（将来的に外部化する場合用）
-#[derive(Serialize, Deserialize)]
-struct Config {
-    github_token: String,
-    output_dir: String,
-    endpoints: Vec<Endpoint>,
-    repos: Vec<RepoInfo>,
-    concurrency: usize,
-    max_files: usize,
-    max_file_size: usize,
 }
