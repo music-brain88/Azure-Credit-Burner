@@ -368,6 +368,21 @@ impl AzureOpenAIClient {
         }
     }
 
+    /// エラーレスポンスから待機時間を抽出する
+    fn extract_retry_delay(&self, error_message: &str) -> Option<u64> {
+        // "Please retry after X seconds" というパターンを探す
+        if let Some(start_idx) = error_message.find("retry after ") {
+            let after_text = &error_message[start_idx + "retry after ".len()..];
+            if let Some(end_idx) = after_text.find(" seconds") {
+                let delay_str = &after_text[..end_idx];
+                if let Ok(delay) = delay_str.parse::<u64>() {
+                    return Some(delay);
+                }
+            }
+        }
+        None
+    }
+
     async fn chat_completion(
         &self,
         messages: &[ChatMessage],
@@ -375,39 +390,75 @@ impl AzureOpenAIClient {
         max_tokens: usize, //o1を使う場合はmax_completion_tokensに変更してね
         _temperature: f32, //o1を使う場合はtemperatureが不要
     ) -> Result<(String, usize)> {
-        let url = format!(
-            "{}/openai/deployments/{}/chat/completions?api-version={}",
-            self.endpoint.endpoint, model, self.api_version
-        );
+        const MAX_RETRIES: usize = 5;
+        let mut retry_count = 0;
+        let mut backoff_delay = 1; // 初期バックオフ（秒）
 
-        let request_body = json!({
-            "messages": messages,
-            "max_completion_tokens": max_tokens,
-            //"temperature": temperature, //o1を使う場合はtemperatureが不要
-        });
+        loop {
+            let url = format!(
+                "{}/openai/deployments/{}/chat/completions?api-version={}",
+                self.endpoint.endpoint, model, self.api_version
+            );
 
-        let response = self
-            .client
-            .post(&url)
-            .header("api-key", &self.endpoint.key)
-            .json(&request_body)
-            .send()
-            .await?;
+            let request_body = json!({
+                "messages": messages,
+                "max_completion_tokens": max_tokens,
+                //"temperature": temperature, //o1を使う場合はtemperatureが不要
+            });
 
-        if response.status().is_success() {
-            let openai_response: OpenAIResponse = response.json().await?;
-            Ok((
-                openai_response.choices[0].message.content.clone(),
-                openai_response.usage.total_tokens,
-            ))
-        } else {
-            let status = response.status();
-            let error_text = response.text().await?;
-            Err(anyhow!(
-                "OpenAI API エラー: ステータス {}, レスポンス: {}",
-                status,
-                error_text
-            ))
+            let response = self
+                .client
+                .post(&url)
+                .header("api-key", &self.endpoint.key)
+                .json(&request_body)
+                .send()
+                .await?;
+
+            if response.status().is_success() {
+                let openai_response: OpenAIResponse = response.json().await?;
+                return Ok((
+                    openai_response.choices[0].message.content.clone(),
+                    openai_response.usage.total_tokens,
+                ));
+            } else {
+                let status = response.status();
+                let error_text = response.text().await?;
+                
+                // 最大リトライ回数に達したらエラーを返す
+                if retry_count >= MAX_RETRIES {
+                    return Err(anyhow!(
+                        "OpenAI API エラー: ステータス {}, レスポンス: {} (最大リトライ回数に到達)",
+                        status,
+                        error_text
+                    ));
+                }
+                
+                // 429エラー（レート制限）の場合、レスポンスから待機時間を抽出
+                let wait_time = if status.as_u16() == 429 {
+                    // レスポンスから待機時間を抽出、失敗したら指数バックオフ
+                    self.extract_retry_delay(&error_text).unwrap_or_else(|| {
+                        // 指数バックオフ: 2^n × ベース時間 (1, 2, 4, 8, 16...)
+                        let delay = 2_u64.pow(retry_count as u32) * backoff_delay;
+                        // 最大待機時間を120秒に制限
+                        delay.min(120)
+                    })
+                } else {
+                    // 429以外のエラーでも一応リトライするが短い待機時間
+                    2_u64.pow(retry_count as u32).min(30)
+                };
+                
+                // エラーをログに記録
+                error!(
+                    "[{}] OpenAI API エラー: ステータス {}, レスポンス: {} (リトライ {}/{}, {}秒後)",
+                    self.endpoint.name, status, error_text, retry_count + 1, MAX_RETRIES, wait_time
+                );
+                
+                // 待機してリトライ
+                time::sleep(Duration::from_secs(wait_time)).await;
+                retry_count += 1;
+                
+                // 次のループでリトライ
+            }
         }
     }
 }
@@ -633,6 +684,8 @@ async fn debate_runner(
 
     // 会話ループ
     let mut turn = 1;
+    let mut consecutive_errors = 0; // 連続エラーカウンター
+    
     while turn <= 20 {
         // 最大20ターンまでに制限
         info!(
@@ -651,6 +704,9 @@ async fn debate_runner(
             .await
         {
             Ok((response, tokens_used)) => {
+                // 成功したら連続エラーカウンターをリセット
+                consecutive_errors = 0;
+                
                 // レスポンスを会話履歴に追加
                 messages.push(ChatMessage {
                     role: "assistant".to_string(),
@@ -702,11 +758,17 @@ async fn debate_runner(
                     endpoint.name, repo_info.owner, repo_info.repo, turn, e
                 );
 
-                // エラー時は少し待ってリトライ
-                time::sleep(Duration::from_secs(5)).await;
-
-                // 3回連続でエラーになったら終了
-                if turn > 10 {
+                // OpenAI API側でのリトライを実装したので、
+                // ここでは短い待機を入れるだけでOK
+                time::sleep(Duration::from_secs(1)).await;
+                
+                // リトライカウントをトラッキングして一定回数以上失敗したら終了
+                consecutive_errors += 1;
+                if consecutive_errors >= 3 {
+                    error!(
+                        "[{}] 連続エラー上限に達しました: {}/{}",
+                        endpoint.name, repo_info.owner, repo_info.repo
+                    );
                     bail!("OpenAI API 呼び出しに複数回失敗しました。終了します。");
                 }
             }

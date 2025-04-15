@@ -8,39 +8,79 @@
     {
       "name": "east-us",
       "key": "${AZURE_OPENAI_KEY_EAST_US}",
-      "endpoint": "https://eastus.api.cognitive.microsoft.com"
+      "endpoint": "https://for-aider.openai.azure.com"
     },
     {
       "name": "west-us",
       "key": "${AZURE_OPENAI_KEY_WEST_US}",
-      "endpoint": "https://westus.api.cognitive.microsoft.com"
+      "endpoint": "https://for-aider.openai.azure.com"
     },
     {
       "name": "japan-east",
       "key": "${AZURE_OPENAI_KEY_JAPAN_EAST}",
-      "endpoint": "https://japaneast.api.cognitive.microsoft.com"
+      "endpoint": "https://snis-m9gmupwj-swedencentral.cognitiveservices.azure.com"
     },
     {
       "name": "europe-west",
       "key": "${AZURE_OPENAI_KEY_EUROPE_WEST}",
-      "endpoint": "https://westeurope.api.cognitive.microsoft.com"
+      "endpoint": "https://snis-m9gmupwj-swedencentral.cognitiveservices.azure.com"
     }
   ],
   "repos": [
     {
-      "owner": "YOUR_GITHUB_USERNAME OR ORGANIZATION",
-      "repo": "YOUR_REPO_NAME",
+      "owner": "GVATECH-AI",
+      "repo": "pulumi",
       "max_files": 50
     },
     {
-      "owner": "YOUR_GITHUB_USERNAME OR ORGANIZATION",
-      "repo": "YOUR_REPO_NAME",
+      "owner": "GVATECH-AI",
+      "repo": "request-gateway-api",
       "max_files": 50
     },
     {
-      "owner": "YOUR_GITHUB_USERNAME OR ORGANIZATION",
-      "repo": "YOUR_REPO_NAME",
+      "owner": "GVATECH-AI",
+      "repo": "proprietary-vector-source-api",
       "max_files": 50
+    },
+    {
+      "owner": "GVATECH-AI",
+      "repo": "assist-ai-connect-api",
+      "max_files": 50
+    },
+    {
+      "owner": "GVATECH-AI",
+      "repo": "transaction-coordinator-api",
+      "max_files": 50
+    },
+    {
+      "owner": "GVATECH-AI",
+      "repo": "llm-controller-api",
+      "max_files": 50
+    },
+    {
+      "owner": "GVATECH-AI",
+      "repo": "chatbot-api",
+      "max_files": 50
+    },
+    {
+      "owner": "GVATECH-AI",
+      "repo": "GVA-NyaN",
+      "max_files": 50
+    },
+    {
+      "owner": "GVATECH-AI",
+      "repo": "retrieval-preparation-api",
+      "max_files": 50
+    },
+    {
+      "owner": "GVATECH-AI",
+      "repo": "vector-db-operator-api",
+      "max_files": 50
+    },
+    {
+      "owner": "music-brain88",
+      "repo": "dotfiles",
+      "max_files": 100
     }
   ]
 }
