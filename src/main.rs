@@ -8,17 +8,17 @@ use serde_json::json;
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::{fs, process::Command, time};
 
-use anyhow::{Result, anyhow, bail};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use anyhow::{anyhow, bail, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use clap::Parser;
 use dotenv::dotenv;
-use futures::{StreamExt, stream};
+use futures::{stream, StreamExt};
 use ignore::{Walk, WalkBuilder};
 use log::{error, info};
 use simple_logger::SimpleLogger;
-use walkdir::WalkDir;
 use std::collections::HashMap;
 use std::env;
+use walkdir::WalkDir;
 
 // llmディレクトリのスキーマを利用
 mod llm;
@@ -139,7 +139,7 @@ impl GitHubClient {
     // リポジトリをクローンする
     async fn clone_repository(&self, repo_info: &RepoInfo) -> Result<String> {
         let repo_dir = format!(
-            "{}/repos/{}_{}", 
+            "{}/repos/{}_{}",
             self.output_dir, repo_info.owner, repo_info.repo
         );
 
@@ -643,9 +643,10 @@ async fn debate_runner(
         // OpenAI APIを呼び出し
         match openai_client
             .chat_completion(
-                &messages, "o1", // 最大モデルを使用
-                4000, // 長い出力
-                0.8,  // 適度な創造性
+                &messages,
+                "gpt-4.5-preview", // 最大モデルを使用
+                4000,              // 長い出力
+                0.8,               // 適度な創造性
             )
             .await
         {
@@ -693,7 +694,7 @@ async fn debate_runner(
                 turn += 1;
 
                 // クレジット消費のためあまり待機しない
-                time::sleep(Duration::from_millis(500)).await;
+                time::sleep(Duration::from_millis(1000)).await;
             }
             Err(e) => {
                 error!(
@@ -705,7 +706,7 @@ async fn debate_runner(
                 time::sleep(Duration::from_secs(5)).await;
 
                 // 3回連続でエラーになったら終了
-                if turn > 3 {
+                if turn > 10 {
                     bail!("OpenAI API 呼び出しに複数回失敗しました。終了します。");
                 }
             }
@@ -732,15 +733,15 @@ fn resolve_env_vars(input: &str) -> String {
     let mut result = input.to_string();
     // ${VAR_NAME} 形式の環境変数参照を検出して置換
     let env_var_regex = regex::Regex::new(r"\$\{([A-Za-z0-9_]+)\}").unwrap();
-    
+
     // 一度すべての環境変数参照を見つけてマップに保存
     let mut replacements = Vec::new();
-    
+
     // まず置換対象をすべて収集
     for captures in env_var_regex.captures_iter(&input) {
         let full_match = captures.get(0).unwrap().as_str().to_string();
         let var_name = captures.get(1).unwrap().as_str().to_string();
-        
+
         let replacement = if let Ok(var_value) = env::var(&var_name) {
             var_value
         } else {
@@ -748,36 +749,36 @@ fn resolve_env_vars(input: &str) -> String {
             error!("⚠️ 環境変数が見つかりません: {}", var_name);
             String::new()
         };
-        
+
         replacements.push((full_match, replacement));
     }
-    
+
     // 一括で置換
     for (pattern, replacement) in replacements {
         result = result.replace(&pattern, &replacement);
     }
-    
+
     result
 }
 
 // 設定ファイルを読み込む関数
 async fn load_config(config_path: &str) -> Result<Config> {
     info!("📝 設定ファイルを読み込み中: {}", config_path);
-    
+
     // 設定ファイルが存在するか確認
     if !Path::new(config_path).exists() {
         return Err(anyhow!("設定ファイルが見つかりません: {}", config_path));
     }
-    
+
     // ファイル読み込み
     let config_text = fs::read_to_string(config_path).await?;
-    
+
     // 環境変数の参照を解決
     let resolved_config = resolve_env_vars(&config_text);
-    
+
     // JSONをパース
     let config: Config = serde_json::from_str(&resolved_config)?;
-    
+
     Ok(config)
 }
 
@@ -801,10 +802,13 @@ async fn main() -> Result<()> {
         Ok(config) => {
             info!("✅ 設定ファイルを読み込みました: {}", args.config_file);
             config
-        },
+        }
         Err(e) => {
-            info!("⚠️ 設定ファイルの読み込みに失敗しました: {}。デフォルト設定を使用します。", e);
-            
+            info!(
+                "⚠️ 設定ファイルの読み込みに失敗しました: {}。デフォルト設定を使用します。",
+                e
+            );
+
             // デフォルト設定
             Config {
                 github_token: std::env::var("GITHUB_TOKEN").unwrap_or_else(|_| "".to_string()),
@@ -814,29 +818,34 @@ async fn main() -> Result<()> {
                         name: "east-us".to_string(),
                         key: std::env::var("AZURE_OPENAI_KEY_EAST_US")
                             .unwrap_or_else(|_| "YOUR_KEY_1".to_string()),
-                        endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_EAST_US")
-                            .unwrap_or_else(|_| "https://eastus.api.cognitive.microsoft.com".to_string()),
+                        endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_EAST_US").unwrap_or_else(
+                            |_| "https://eastus.api.cognitive.microsoft.com".to_string(),
+                        ),
                     },
                     Endpoint {
                         name: "west-us".to_string(),
                         key: std::env::var("AZURE_OPENAI_KEY_WEST_US")
                             .unwrap_or_else(|_| "YOUR_KEY_2".to_string()),
-                        endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_WEST_US")
-                            .unwrap_or_else(|_| "https://westus.api.cognitive.microsoft.com".to_string()),
+                        endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_WEST_US").unwrap_or_else(
+                            |_| "https://westus.api.cognitive.microsoft.com".to_string(),
+                        ),
                     },
                     Endpoint {
                         name: "japan-east".to_string(),
                         key: std::env::var("AZURE_OPENAI_KEY_JAPAN_EAST")
                             .unwrap_or_else(|_| "YOUR_KEY_3".to_string()),
-                        endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_JAPAN_EAST")
-                            .unwrap_or_else(|_| "https://japaneast.api.cognitive.microsoft.com".to_string()),
+                        endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_JAPAN_EAST").unwrap_or_else(
+                            |_| "https://japaneast.api.cognitive.microsoft.com".to_string(),
+                        ),
                     },
                     Endpoint {
                         name: "europe-west".to_string(),
                         key: std::env::var("AZURE_OPENAI_KEY_EUROPE_WEST")
                             .unwrap_or_else(|_| "YOUR_KEY_4".to_string()),
                         endpoint: std::env::var("AZURE_OPENAI_ENDPOINT_EUROPE_WEST")
-                            .unwrap_or_else(|_| "https://westeurope.api.cognitive.microsoft.com".to_string()),
+                            .unwrap_or_else(|_| {
+                                "https://westeurope.api.cognitive.microsoft.com".to_string()
+                            }),
                     },
                 ],
                 repos: vec![
@@ -867,19 +876,19 @@ async fn main() -> Result<()> {
     if let Some(token) = args.github_token {
         config.github_token = token;
     }
-    
+
     if let Some(output_dir) = args.output_dir {
         config.output_dir = output_dir;
     }
-    
+
     if let Some(concurrency) = args.concurrency {
         config.concurrency = concurrency;
     }
-    
+
     if let Some(max_files) = args.max_files {
         config.max_files = max_files;
     }
-    
+
     if let Some(max_file_size) = args.max_file_size {
         config.max_file_size = max_file_size;
     }
