@@ -8,11 +8,11 @@ use serde_json::json;
 use std::{path::Path, sync::Arc, time::Duration};
 use tokio::{fs, process::Command, time};
 
-use anyhow::{Result, anyhow, bail};
-use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
+use anyhow::{anyhow, bail, Result};
+use base64::{engine::general_purpose::STANDARD as BASE64, Engine as _};
 use clap::Parser;
 use dotenv::dotenv;
-use futures::{StreamExt, stream};
+use futures::{stream, StreamExt};
 use ignore::{Walk, WalkBuilder};
 use log::{error, info};
 use simple_logger::SimpleLogger;
@@ -358,7 +358,7 @@ impl AzureOpenAIClient {
         AzureOpenAIClient {
             client,
             endpoint,
-            api_version: "2023-05-15".to_string(),
+            api_version: "2024-12-01-preview".to_string(),
         }
     }
 
@@ -366,8 +366,8 @@ impl AzureOpenAIClient {
         &self,
         messages: &[ChatMessage],
         model: &str,
-        max_tokens: usize,
-        temperature: f32,
+        max_tokens: usize, //o1を使う場合はmax_completion_tokensに変更してね
+        _temperature: f32, //o1を使う場合はtemperatureが不要
     ) -> Result<(String, usize)> {
         let url = format!(
             "{}/openai/deployments/{}/chat/completions?api-version={}",
@@ -376,8 +376,8 @@ impl AzureOpenAIClient {
 
         let request_body = json!({
             "messages": messages,
-            "max_tokens": max_tokens,
-            "temperature": temperature,
+            "max_completion_tokens": max_tokens,
+            //"temperature": temperature, //o1を使う場合はtemperatureが不要
         });
 
         let response = self
@@ -627,7 +627,7 @@ async fn debate_runner(
 
     // 会話ループ
     let mut turn = 1;
-    while turn <= 10 {
+    while turn <= 20 {
         // 最大20ターンまでに制限
         info!(
             "[{}] 分析実行中: {}/{} ({}) - ターン {}",
@@ -637,10 +637,9 @@ async fn debate_runner(
         // OpenAI APIを呼び出し
         match openai_client
             .chat_completion(
-                &messages,
-                "gpt-4-32k", // 最大モデルを使用
-                4000,        // 長い出力
-                0.8,         // 適度な創造性
+                &messages, "o1", // 最大モデルを使用
+                4000, // 長い出力
+                0.8,  // 適度な創造性
             )
             .await
         {
