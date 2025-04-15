@@ -7,6 +7,8 @@
 Azure Credit Burnerは、Azure OpenAI Serviceのクレジットを効率的に消費するためのRust製ツールです。
 GitHubのプライベートリポジトリをGPT-4に深く分析させることで、短期間で大量のAzureクレジットを使用しながら、実用的で価値のある技術的フィードバックを得ることができます。
 
+<!-- llm:readme=/home/archie/workspace/azure-credit-burner/llm/README.md -->
+
 ## ✨ 特徴
 
 
