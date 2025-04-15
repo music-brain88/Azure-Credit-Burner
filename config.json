@@ -1,0 +1,46 @@
+{
+  "github_token": "${GITHUB_TOKEN}",
+  "output_dir": "llm_debates",
+  "concurrency": 8,
+  "max_files": 50,
+  "max_file_size": 100000,
+  "endpoints": [
+    {
+      "name": "east-us",
+      "key": "${AZURE_OPENAI_KEY_EAST_US}",
+      "endpoint": "https://eastus.api.cognitive.microsoft.com"
+    },
+    {
+      "name": "west-us",
+      "key": "${AZURE_OPENAI_KEY_WEST_US}",
+      "endpoint": "https://westus.api.cognitive.microsoft.com"
+    },
+    {
+      "name": "japan-east",
+      "key": "${AZURE_OPENAI_KEY_JAPAN_EAST}",
+      "endpoint": "https://japaneast.api.cognitive.microsoft.com"
+    },
+    {
+      "name": "europe-west",
+      "key": "${AZURE_OPENAI_KEY_EUROPE_WEST}",
+      "endpoint": "https://westeurope.api.cognitive.microsoft.com"
+    }
+  ],
+  "repos": [
+    {
+      "owner": "YOUR_GITHUB_USERNAME OR ORGANIZATION",
+      "repo": "YOUR_REPO_NAME",
+      "max_files": 50
+    },
+    {
+      "owner": "YOUR_GITHUB_USERNAME OR ORGANIZATION",
+      "repo": "YOUR_REPO_NAME",
+      "max_files": 50
+    },
+    {
+      "owner": "YOUR_GITHUB_USERNAME OR ORGANIZATION",
+      "repo": "YOUR_REPO_NAME",
+      "max_files": 50
+    }
+  ]
+}
